@@ -392,6 +392,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                     "configurable": {
                         **config.get("configurable", {}),
                         "research_unit_id": str(research_unit_id),
+                        "research_plan": state.get("research_plan"),
                     },
                 })
                 for tool_call, research_unit_id in research_units

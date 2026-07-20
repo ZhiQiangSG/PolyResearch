@@ -5,11 +5,68 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
-from polyresearch.models import ResearchRun
+from polyresearch.models import (
+    AtomicSubquestion,
+    LanguageDecision,
+    LanguageSelectionAssessment,
+    ResearchLanguage,
+    ResearchPlan,
+    ResearchRun,
+)
 from polyresearch.repositories import SqliteEvidenceRepository
 from polyresearch import utils
 from polyresearch.configuration import Configuration
+from polyresearch.search_providers import (
+    BailianWebSearchProvider,
+    SearchProviderRouter,
+    SearchRequest,
+    TavilySearchProvider,
+)
 from polyresearch.graph import _persist_non_tavily_tool_outputs
+
+
+def _routing_plan() -> ResearchPlan:
+    assessment = LanguageSelectionAssessment(
+        place_and_institutional_jurisdiction="Fixture jurisdiction.",
+        primary_actors_and_official_records="Fixture official records.",
+        scholarly_technical_and_media_ecosystems="Fixture ecosystem.",
+        diasporic_or_regional_coverage="Not applicable.",
+        primary_source_availability="Fixture primary sources.",
+        marginal_information_gain="Fixture information gain.",
+    )
+    languages = [
+        ResearchLanguage(
+            language="zh",
+            priority=1,
+            query_budget=2,
+            expected_unique_value="Chinese primary sources.",
+            selection_rationale="Chinese discovery.",
+            selection_assessment=assessment,
+            expected_source_types=["official"],
+        ),
+        ResearchLanguage(
+            language="en",
+            priority=2,
+            query_budget=1,
+            expected_unique_value="Broad bridge coverage.",
+            selection_rationale="English discovery.",
+            selection_assessment=assessment,
+            expected_source_types=["news"],
+        ),
+    ]
+    return ResearchPlan(
+        run_id=uuid4(),
+        subquestions=[
+            AtomicSubquestion(question="What happened?", answer_scope="Find evidence.")
+        ],
+        ranked_languages=languages,
+        language_decisions=[
+            LanguageDecision(language="zh", status="selected", rationale="Primary records."),
+            LanguageDecision(language="en", status="selected", rationale="Bridge coverage."),
+        ],
+        language_rationale={"zh": "Primary records.", "en": "Bridge coverage."},
+        query_variants={"zh": ["政策"], "en": ["policy"]},
+    )
 
 
 class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
@@ -19,9 +76,23 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                 bailian_web_search={"tool_name": "filesystem_read", "api_key": "test"}
             )
 
-    async def test_tavily_remains_available_without_bailian(self) -> None:
+    async def test_planned_search_is_available_without_bailian(self) -> None:
         tools = await utils.get_all_tools({"configurable": {}})
-        self.assertIn("tavily_search", [tool.name for tool in tools])
+        self.assertIn("planned_web_search", [tool.name for tool in tools])
+
+    def test_router_selects_bailian_for_chinese_and_tavily_otherwise(self) -> None:
+        router = SearchProviderRouter()
+        plan = _routing_plan()
+        self.assertIsInstance(
+            router.route(SearchRequest("政策", "zh", "official"), plan),
+            BailianWebSearchProvider,
+        )
+        self.assertIsInstance(
+            router.route(SearchRequest("policy", "en", "news"), plan),
+            TavilySearchProvider,
+        )
+        with self.assertRaises(Exception):
+            router.route(SearchRequest("policy", "en", "official"), plan)
 
     async def test_bailian_loads_only_allowlisted_web_search_tool(self) -> None:
         captured_config = None
@@ -40,7 +111,7 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
         original_client = utils.MultiServerMCPClient
         utils.MultiServerMCPClient = FakeMcpClient
         try:
-            tools = await utils.get_all_tools(
+            tools = await utils.load_bailian_web_search_tool(
                 {
                     "configurable": {
                         "bailian_web_search": {"api_key": "test-key"},
@@ -49,9 +120,9 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                             "tools": ["unrelated_remote_tool"],
                         },
                     }
-                }
+                },
+                existing_tool_names=set(),
             )
-            self.assertIn("tavily_search", [tool.name for tool in tools])
             self.assertIn("web_search", [tool.name for tool in tools])
             self.assertNotIn("unrelated_remote_tool", [tool.name for tool in tools])
             self.assertEqual(

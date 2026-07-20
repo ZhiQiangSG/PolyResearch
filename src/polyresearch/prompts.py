@@ -195,7 +195,7 @@ You can use any of the tools provided to you to find resources that can help ans
 
 <Available Tools>
 You have access to two main tools:
-1. **tavily_search**: For conducting web searches to gather information
+1. **planned_web_search**: For discovery through the persisted multilingual plan. Supply only a selected research language and one of that language's planned source types. Chinese-language discovery is routed to Bailian Web Search; all other selected languages are routed to Tavily.
 2. **think_tool**: For reflection and strategic planning during research
 {mcp_prompt}
 

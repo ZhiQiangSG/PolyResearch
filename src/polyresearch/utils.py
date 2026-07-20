@@ -30,7 +30,7 @@ from langgraph.config import get_store
 from mcp import McpError
 from tavily import AsyncTavilyClient
 
-from polyresearch.configuration import Configuration, SearchAPI
+from polyresearch.configuration import Configuration
 from polyresearch.models import (
     EvidencePassage,
     ProvenanceAttachment,
@@ -599,32 +599,6 @@ async def load_bailian_web_search_tool(
 
 # --- Tool Utils ---
 
-async def get_search_tool(search_api: SearchAPI):
-    """Configure and return search tools based on the specified API provider.
-    
-    Args:
-        search_api: The search API provider to use (Tavily or None)
-        
-    Returns:
-        List of configured search tool objects for the specified provider
-    """ 
-    if search_api == SearchAPI.TAVILY:
-        # Configure Tavily search tool with metadata
-        search_tool = tavily_search
-        search_tool.metadata = {
-            **(search_tool.metadata or {}), 
-            "type": "search", 
-            "name": "web_search"
-        }
-        return [search_tool]
-        
-    elif search_api == SearchAPI.NONE:
-        # No search functionality configured
-        return []
-        
-    # Default fallback for unknown search API types
-    return []
-    
 async def get_all_tools(config: RunnableConfig):
     """Assemble complete toolkit including research, search, and MCP tools.
     
@@ -637,11 +611,10 @@ async def get_all_tools(config: RunnableConfig):
     # Start with core research tools
     tools = [tool(ResearchComplete), think_tool]
     
-    # Add configured search tools
-    configurable = Configuration.from_runnable_config(config)
-    search_api = SearchAPI(get_config_value(configurable.search_api))
-    search_tools = await get_search_tool(search_api)
-    tools.extend(search_tools)
+    # Route discovery through the persisted multilingual research plan.
+    from polyresearch.search_providers import planned_web_search
+
+    tools.append(planned_web_search)
     
     # Track existing tool names to prevent conflicts
     existing_tool_names = {

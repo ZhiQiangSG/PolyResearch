@@ -65,6 +65,7 @@ class SupervisorState(TypedDict):
 
     supervisor_messages: Annotated[list[MessageLikeRepresentation], override_reducer]
     research_brief: str
+    research_plan: Optional[ResearchPlan]
     research_iterations: int = 0
     sources: Annotated[list[SourceRecord], merge_evidence_by_id]
     passages: Annotated[list[EvidencePassage], merge_evidence_by_id]

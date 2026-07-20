@@ -17,12 +17,6 @@ class ModelProvider(str, Enum):
     QWEN_OPENAI_COMPATIBLE = "qwen_openai_compatible"
 
 
-class SearchAPI(Enum):
-    """Enumeration of available search API providers."""
-    
-    TAVILY = "tavily"
-    NONE = "none"
-
 class MCPConfig(BaseModel):
     """Deprecated legacy MCP configuration; not exposed to research agents."""
     
@@ -88,7 +82,6 @@ class Configuration(BaseModel):
     max_concurrent_research_units: int = Field(default=5)
 
     # Research Configuration
-    search_api: SearchAPI = Field(default=SearchAPI.TAVILY)
     max_researcher_iterations: int = Field(default=3)
     max_react_tool_calls: int = Field(default=5)
 
