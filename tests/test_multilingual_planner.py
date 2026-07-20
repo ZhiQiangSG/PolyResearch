@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from polyresearch.models import (
     AtomicSubquestion,
+    LanguageSelectionAssessment,
     ResearchEntity,
     ResearchLanguage,
     ResearchPlan,
@@ -14,6 +15,17 @@ from polyresearch.models import (
 from polyresearch.repositories import SqliteEvidenceRepository
 
 graph_module = importlib.import_module("polyresearch.graph")
+
+
+def _selection_assessment() -> LanguageSelectionAssessment:
+    return LanguageSelectionAssessment(
+        place_and_institutional_jurisdiction="The policy was issued in China.",
+        primary_actors_and_official_records="The issuing authority publishes in Chinese.",
+        scholarly_technical_and_media_ecosystems="Chinese policy analysis supplies local context.",
+        diasporic_or_regional_coverage="Not applicable: domestic policy is the focus.",
+        primary_source_availability="Official Chinese records are expected to be available.",
+        marginal_information_gain="Adds primary records unavailable in English coverage.",
+    )
 
 
 class _PlannerStub:
@@ -50,6 +62,7 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                         query_budget=1,
                         expected_unique_value="Official records.",
                         selection_rationale="The policy was issued in China.",
+                        selection_assessment=_selection_assessment(),
                     )
                 ],
                 language_rationale={"zh": "Primary records."},
@@ -78,6 +91,7 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                         query_budget=3,
                         expected_unique_value="Official Chinese records.",
                         selection_rationale="The policy was issued in China.",
+                        selection_assessment=_selection_assessment(),
                         expected_source_types=["official"],
                     )
                 ],
@@ -102,6 +116,8 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.update["research_plan"], plan)
                 self.assertIn("政策X", result.update["supervisor_messages"]["value"][1].content)
                 self.assertIn("ResearchBrief", stub.messages[0].content)
+                self.assertIn("marginal information gain", stub.messages[0].content)
+                self.assertIn("do not use a fixed default language list", stub.messages[0].content)
             finally:
                 graph_module.create_qwen_chat_model = original_factory
                 repository.close()

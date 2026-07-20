@@ -40,6 +40,19 @@ class AtomicSubquestion(BaseModel):
     )
 
 
+class LanguageSelectionAssessment(BaseModel):
+    """Recorded basis for choosing one research language over another."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    place_and_institutional_jurisdiction: str = Field(min_length=1)
+    primary_actors_and_official_records: str = Field(min_length=1)
+    scholarly_technical_and_media_ecosystems: str = Field(min_length=1)
+    diasporic_or_regional_coverage: str = Field(min_length=1)
+    primary_source_availability: str = Field(min_length=1)
+    marginal_information_gain: str = Field(min_length=1)
+
+
 class ResearchLanguage(BaseModel):
     """A ranked research language with an explicit retrieval allocation."""
 
@@ -50,6 +63,7 @@ class ResearchLanguage(BaseModel):
     query_budget: int = Field(ge=1)
     expected_unique_value: str = Field(min_length=1)
     selection_rationale: str = Field(min_length=1)
+    selection_assessment: LanguageSelectionAssessment
     expected_source_types: list[str] = Field(min_length=1)
     preferred_domains: list[str] = Field(default_factory=list)
 

@@ -243,7 +243,7 @@ async def multilingual_planner(
     return Command(
         goto="research_supervisor", 
         update={
-            "research_brief": response.research_brief,
+                "research_brief": research_brief,
             "supervisor_messages": {
                 "type": "override",
                 "value": [

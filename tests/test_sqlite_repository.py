@@ -14,6 +14,7 @@ from polyresearch.models import (
     ReportStatement,
     ResearchPlan,
     ResearchLanguage,
+    LanguageSelectionAssessment,
     ResearchRun,
     SourceRecord,
     SourceVersion,
@@ -66,6 +67,14 @@ class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                             query_budget=2,
                             expected_unique_value="Primary source coverage.",
                             selection_rationale="The requested output is English.",
+                            selection_assessment=LanguageSelectionAssessment(
+                                place_and_institutional_jurisdiction="English jurisdiction.",
+                                primary_actors_and_official_records="Official records are in English.",
+                                scholarly_technical_and_media_ecosystems="English research ecosystem.",
+                                diasporic_or_regional_coverage="Not applicable for this fixture.",
+                                primary_source_availability="Official sources are available.",
+                                marginal_information_gain="Provides the primary source language.",
+                            ),
                             expected_source_types=["official"],
                         )
                     ],
