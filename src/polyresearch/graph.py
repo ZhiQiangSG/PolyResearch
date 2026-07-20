@@ -35,6 +35,7 @@ from polyresearch.models import (
     Claim,
     ClaimExtractionResult,
     EvidencePassage,
+    ProvenanceAttachment,
     ResearcherOutputState,
     ResearcherState,
     ResearchQuestion,
@@ -449,6 +450,31 @@ async def execute_tool_safely(tool, args, config):
         return f"Error executing tool: {str(e)}"
 
 
+async def _persist_non_tavily_tool_outputs(
+    config: RunnableConfig, tool_calls: list[dict], observations: list[object]
+) -> None:
+    """Retain raw non-Tavily tool outputs as audit-only provenance attachments."""
+    try:
+        context = RunContext.from_runnable_config(config)
+    except ValueError:
+        return
+
+    attachments = [
+        ProvenanceAttachment(
+            run_id=context.run_id,
+            provider="runtime_tool",
+            tool_name=tool_call["name"],
+            raw_output=str(observation),
+        )
+        for tool_call, observation in zip(tool_calls, observations)
+        if tool_call["name"] != "tavily_search"
+    ]
+    if attachments:
+        await context.repository.append_provenance_attachments(
+            context.run_id, attachments
+        )
+
+
 def _evidence_from_tool_messages(
     messages: list[MessageLikeRepresentation],
 ) -> tuple[list[SourceRecord], list[EvidencePassage]]:
@@ -546,6 +572,7 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
         for tool_call in tool_calls
     ]
     observations = await asyncio.gather(*tool_execution_tasks)
+    await _persist_non_tavily_tool_outputs(config, tool_calls, observations)
     
     # Create tool messages from execution results
     tool_outputs = [

@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal, Optional
@@ -32,7 +33,15 @@ from mcp import McpError
 from tavily import AsyncTavilyClient
 
 from polyresearch.configuration import Configuration, SearchAPI
-from polyresearch.models import EvidencePassage, ResearchComplete, SourceRecord
+from polyresearch.models import (
+    EvidencePassage,
+    ProvenanceAttachment,
+    QueryRecord,
+    ResearchComplete,
+    SourceRecord,
+    SourceVersion,
+)
+from polyresearch.repositories import RunContext
 
 # --- Tavily Search Tool Utils ---
 
@@ -45,6 +54,7 @@ async def tavily_search(
     queries: list[str],
     max_results: Annotated[int, InjectedToolArg] = 5,
     topic: Annotated[Literal["general", "news", "finance"], InjectedToolArg] = "general",
+    query_language: Annotated[str, InjectedToolArg] = "en",
     config: RunnableConfig = None
 ) -> str:
     """Fetch source records and exact passages from Tavily search API.
@@ -75,10 +85,11 @@ async def tavily_search(
             if url not in unique_results:
                 unique_results[url] = {**result, "query": response['query']}
     
-    # Step 3: Preserve original content as typed source and passage evidence.
-    # Search snippets are discovery aids; a passage must contain source text that can
-    # later be linked to a claim, rather than an LLM-generated summary.
+    # Step 3: Persist original tool output and typed source/passages immediately.
+    # The returned payload is for the researcher's typed evidence ledger; raw tool
+    # output remains an audit attachment rather than a reasoning input.
     sources: list[SourceRecord] = []
+    source_versions: list[SourceVersion] = []
     passages: list[EvidencePassage] = []
     for result in unique_results.values():
         original_text = result.get("raw_content") or result.get("content")
@@ -91,16 +102,28 @@ async def tavily_search(
             title=result.get("title") or result["url"],
             content_hash=content_hash,
         )
-        passage = EvidencePassage(
+        source_version = SourceVersion(
             source_id=source.id,
-            text=original_text,
-            locator="retrieved-content",
+            version_number=1,
+            content_hash=content_hash,
+            raw_content=original_text,
         )
         sources.append(source)
-        passages.append(passage)
+        source_versions.append(source_version)
+        passages.extend(_chunk_evidence_passages(source, original_text))
 
     if not sources:
         return "No valid search results found. Please try different search queries or use a different search API."
+
+    await _persist_tavily_ingestion(
+        config=config,
+        search_results=search_results,
+        queries=queries,
+        query_language=query_language,
+        sources=sources,
+        source_versions=source_versions,
+        passages=passages,
+    )
 
     return json.dumps(
         {
@@ -110,6 +133,75 @@ async def tavily_search(
         },
         ensure_ascii=False,
     )
+
+
+def _chunk_evidence_passages(
+    source: SourceRecord, original_text: str
+) -> list[EvidencePassage]:
+    """Split fetched text into original-language paragraphs with stable locators."""
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", original_text)
+        if paragraph.strip()
+    ]
+    if not paragraphs:
+        return []
+    return [
+        EvidencePassage(
+            source_id=source.id,
+            text=paragraph,
+            locator=f"paragraph-{index}",
+            original_language=source.language,
+        )
+        for index, paragraph in enumerate(paragraphs, start=1)
+    ]
+
+
+async def _persist_tavily_ingestion(
+    *,
+    config: RunnableConfig | None,
+    search_results: list[dict],
+    queries: list[str],
+    query_language: str,
+    sources: list[SourceRecord],
+    source_versions: list[SourceVersion],
+    passages: list[EvidencePassage],
+) -> None:
+    """Write all Tavily discovery artifacts before returning to the researcher."""
+    if not config:
+        return
+    try:
+        context = RunContext.from_runnable_config(config)
+    except ValueError:
+        # Direct tool use remains available for isolated unit tests; graph execution
+        # always supplies a durable context from the CLI.
+        return
+
+    raw_output = json.dumps(search_results, ensure_ascii=False, sort_keys=True, default=str)
+    query_records = [
+        QueryRecord(
+            run_id=context.run_id,
+            query=query,
+            language=query_language,
+            provider="tavily",
+        )
+        for query in queries
+    ]
+    await context.repository.append_query_records(context.run_id, query_records)
+    await context.repository.append_provenance_attachments(
+        context.run_id,
+        [
+            ProvenanceAttachment(
+                run_id=context.run_id,
+                provider="tavily",
+                tool_name="tavily_search",
+                raw_output=raw_output,
+            )
+        ],
+    )
+    await context.repository.append_sources(context.run_id, sources)
+    await context.repository.append_source_versions(context.run_id, source_versions)
+    await context.repository.append_passages(context.run_id, passages)
 
 async def tavily_search_async(
     search_queries, 
