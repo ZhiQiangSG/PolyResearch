@@ -593,14 +593,27 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
     extraction_prompt = (
         "Extract only atomic, falsifiable claims directly supported by the supplied "
         "evidence. Each claim must cite one or more exact passage IDs from the "
-        "tool payload. Do not invent sources, passage IDs, or verification results."
+        "typed evidence ledger. Do not invent sources, passage IDs, or verification "
+        "results. Raw tool output is an audit attachment, not evidence for reasoning."
+    )
+    evidence_ledger = json.dumps(
+        {
+            "sources": _serialize_artifacts(sources, SourceRecord),
+            "passages": _serialize_artifacts(passages, EvidencePassage),
+        },
+        ensure_ascii=False,
     )
 
     try:
         response = cast(
             ClaimExtractionResult,
             await claim_extractor.ainvoke(
-                [SystemMessage(content=extraction_prompt), *researcher_messages]
+                [
+                    SystemMessage(content=extraction_prompt),
+                    HumanMessage(
+                        content=f"<EvidenceLedger>\n{evidence_ledger}\n</EvidenceLedger>"
+                    ),
+                ]
             ),
         )
     except Exception:

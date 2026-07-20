@@ -6,6 +6,7 @@ from polyresearch.models import (
     Claim,
     EvidenceLink,
     EvidencePassage,
+    ProvenanceAttachment,
     QueryRecord,
     ReportBundle,
     ReportStatement,
@@ -36,6 +37,12 @@ class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     query="policy update",
                     language="en",
                     provider="tavily",
+                )
+                attachment = ProvenanceAttachment(
+                    run_id=run.id,
+                    provider="tavily",
+                    tool_name="tavily_search",
+                    raw_output='{"results": ["untrusted tool payload"]}',
                 )
                 source = SourceRecord(
                     canonical_url="https://example.test/policy",
@@ -93,6 +100,7 @@ class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 await repository.create_run(run)
                 await repository.append_research_plans(run.id, [plan])
                 await repository.append_query_records(run.id, [query])
+                await repository.append_provenance_attachments(run.id, [attachment])
                 await repository.append_sources(run.id, [source])
                 await repository.append_source_versions(run.id, [version])
                 await repository.append_passages(run.id, [passage])
@@ -111,6 +119,9 @@ class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await repository.get_run(run.id), run)
                 self.assertEqual(await repository.list_research_plans(run.id), [plan])
                 self.assertEqual(await repository.list_query_records(run.id), [query])
+                self.assertEqual(
+                    await repository.list_provenance_attachments(run.id), [attachment]
+                )
                 self.assertEqual(await repository.list_sources(run.id), [source])
                 self.assertEqual(await repository.list_source_versions(run.id), [version])
                 self.assertEqual(await repository.list_passages(run.id), [passage])

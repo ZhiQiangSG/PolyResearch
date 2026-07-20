@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class VerificationStatus(StrEnum):
@@ -82,6 +82,34 @@ class QueryRecord(BaseModel):
     fallback_from: str | None = None
     failure: str | None = None
     executed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ProvenanceAttachment(BaseModel):
+    """Immutable raw output retained for audit, never as a reasoning artifact."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID = Field(default_factory=uuid4)
+    run_id: UUID
+    provider: str = Field(min_length=1)
+    tool_name: str = Field(min_length=1)
+    raw_output: str
+    content_hash: str
+    captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @model_validator(mode="before")
+    @classmethod
+    def add_content_hash(cls, values: Any) -> Any:
+        """Derive a stable content hash when callers provide raw output only."""
+        if not isinstance(values, dict) or "content_hash" in values:
+            return values
+        import hashlib
+
+        payload = dict(values)
+        payload["content_hash"] = hashlib.sha256(
+            str(payload.get("raw_output", "")).encode("utf-8")
+        ).hexdigest()
+        return payload
 
 
 class Claim(BaseModel):

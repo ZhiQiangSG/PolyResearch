@@ -8,6 +8,7 @@ from polyresearch.models import (
     Claim,
     EvidenceLink,
     EvidencePassage,
+    ProvenanceAttachment,
     QueryRecord,
     ReportBundle,
     ReportStatement,
@@ -56,6 +57,12 @@ class EvidenceRepository(ABC):
         self, run_id: UUID, queries: Sequence[QueryRecord]
     ) -> None:
         """Persist provider-routing and discovery-query provenance."""
+
+    @abstractmethod
+    async def append_provenance_attachments(
+        self, run_id: UUID, attachments: Sequence[ProvenanceAttachment]
+    ) -> None:
+        """Persist immutable raw tool outputs as audit-only attachments."""
 
     @abstractmethod
     async def append_sources(
@@ -116,6 +123,12 @@ class EvidenceRepository(ABC):
     @abstractmethod
     async def list_query_records(self, run_id: UUID) -> list[QueryRecord]:
         """List discovery-query provenance for a run in persistence order."""
+
+    @abstractmethod
+    async def list_provenance_attachments(
+        self, run_id: UUID
+    ) -> list[ProvenanceAttachment]:
+        """List audit-only raw tool output attachments for a run."""
 
     @abstractmethod
     async def list_sources(self, run_id: UUID) -> list[SourceRecord]:

@@ -14,6 +14,7 @@ from polyresearch.models import (
     Claim,
     EvidenceLink,
     EvidencePassage,
+    ProvenanceAttachment,
     QueryRecord,
     ReportBundle,
     ReportStatement,
@@ -41,7 +42,7 @@ class SqliteEvidenceRepository(EvidenceRepository):
     Pydantic artifacts and their stable IDs for later graph traversal.
     """
 
-    _MIGRATION_VERSION = 1
+    _MIGRATION_VERSION = 2
     _ARTIFACT_TABLES = (
         "research_plans",
         "query_records",
@@ -80,41 +81,43 @@ class SqliteEvidenceRepository(EvidenceRepository):
                 )
                 """
             )
-            applied = self._connection.execute(
-                "SELECT 1 FROM schema_migrations WHERE version = ?",
-                (self._MIGRATION_VERSION,),
+            initial_applied = self._connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = 1"
             ).fetchone()
-            if applied:
-                return
-
-            self._connection.execute(
-                """
-                CREATE TABLE research_runs (
-                    id TEXT PRIMARY KEY,
-                    payload TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            for table in self._ARTIFACT_TABLES:
+            if not initial_applied:
                 self._connection.execute(
-                    f"""
-                    CREATE TABLE {table} (
+                    """
+                    CREATE TABLE research_runs (
                         id TEXT PRIMARY KEY,
-                        run_id TEXT NOT NULL,
                         payload TEXT NOT NULL,
-                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY(run_id) REFERENCES research_runs(id)
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                     )
                     """
                 )
-                self._connection.execute(
-                    f"CREATE INDEX idx_{table}_run_id ON {table}(run_id)"
-                )
-            self._connection.execute(
-                "INSERT INTO schema_migrations(version) VALUES (?)",
-                (self._MIGRATION_VERSION,),
+                for table in self._ARTIFACT_TABLES:
+                    self._create_artifact_table(table)
+                self._connection.execute("INSERT INTO schema_migrations(version) VALUES (1)")
+
+            attachments_applied = self._connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = 2"
+            ).fetchone()
+            if not attachments_applied:
+                self._create_artifact_table("provenance_attachments")
+                self._connection.execute("INSERT INTO schema_migrations(version) VALUES (2)")
+
+    def _create_artifact_table(self, table: str) -> None:
+        self._connection.execute(
+            f"""
+            CREATE TABLE {table} (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES research_runs(id)
             )
+            """
+        )
+        self._connection.execute(f"CREATE INDEX idx_{table}_run_id ON {table}(run_id)")
 
     @contextmanager
     def _transaction(self):
@@ -216,6 +219,12 @@ class SqliteEvidenceRepository(EvidenceRepository):
         with self._transaction():
             self._append("query_records", run_id, queries)
 
+    async def append_provenance_attachments(
+        self, run_id: UUID, attachments: Sequence[ProvenanceAttachment]
+    ) -> None:
+        with self._transaction():
+            self._append("provenance_attachments", run_id, attachments)
+
     async def append_sources(self, run_id: UUID, sources: Sequence[SourceRecord]) -> None:
         with self._transaction():
             self._append("sources", run_id, sources)
@@ -276,6 +285,11 @@ class SqliteEvidenceRepository(EvidenceRepository):
 
     async def list_query_records(self, run_id: UUID) -> list[QueryRecord]:
         return self._list("query_records", run_id, QueryRecord)
+
+    async def list_provenance_attachments(
+        self, run_id: UUID
+    ) -> list[ProvenanceAttachment]:
+        return self._list("provenance_attachments", run_id, ProvenanceAttachment)
 
     async def list_sources(self, run_id: UUID) -> list[SourceRecord]:
         return self._list("sources", run_id, SourceRecord)
