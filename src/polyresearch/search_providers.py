@@ -29,7 +29,13 @@ class TavilySearchProvider:
 
     name = "tavily"
 
-    async def search(self, request: SearchRequest, config: RunnableConfig) -> str:
+    async def search(
+        self,
+        request: SearchRequest,
+        config: RunnableConfig,
+        *,
+        fallback_from: str | None = None,
+    ) -> str:
         # Import lazily to keep the provider module independent of tool setup.
         from polyresearch.utils import tavily_search
 
@@ -41,6 +47,7 @@ class TavilySearchProvider:
             end_date=request.date_to,
             target_source_type=request.target_source_type,
             query_rationale=request.rationale,
+            fallback_from=fallback_from,
             config=config,
         )
 
@@ -73,7 +80,11 @@ class BailianWebSearchProvider:
 
 
 async def _persist_bailian_query_record(
-    request: SearchRequest, config: RunnableConfig
+    request: SearchRequest,
+    config: RunnableConfig,
+    *,
+    failure: str | None = None,
+    fallback_from: str | None = None,
 ) -> None:
     """Record Bailian's plan-driven query metadata before later ingestion stages."""
     try:
@@ -94,6 +105,8 @@ async def _persist_bailian_query_record(
                 rationale=request.rationale,
                 date_from=request.date_from,
                 date_to=request.date_to,
+                failure=failure,
+                fallback_from=fallback_from,
             )
         ],
     )
@@ -120,9 +133,34 @@ class SearchProviderRouter:
                 f"Source type '{request.target_source_type}' is not planned for "
                 f"language '{request.language}'."
             )
+        if request.target_source_type in {"bridge", "cross_language_bridge"}:
+            return TavilySearchProvider()
         if selected_language.language.casefold().startswith("zh"):
             return BailianWebSearchProvider()
         return TavilySearchProvider()
+
+    async def search(
+        self, request: SearchRequest, plan: ResearchPlan, config: RunnableConfig
+    ) -> str:
+        """Execute a routed request and make any provider substitution explicit."""
+        provider = self.route(request, plan)
+        if not isinstance(provider, BailianWebSearchProvider):
+            return await provider.search(request, config)
+        try:
+            return await provider.search(request, config)
+        except Exception as error:
+            # Preserve the failed Bailian attempt before using a non-equivalent
+            # fallback. The succeeding Tavily record points back to this attempt.
+            await _persist_bailian_query_record(
+                request,
+                config,
+                failure=str(error),
+            )
+            return await TavilySearchProvider().search(
+                request,
+                config,
+                fallback_from=provider.name,
+            )
 
 
 def _research_plan_from_config(config: RunnableConfig) -> ResearchPlan:
@@ -157,5 +195,6 @@ async def planned_web_search(
         date_to=date_to,
         rationale=query_rationale,
     )
-    provider = SearchProviderRouter().route(request, _research_plan_from_config(config))
-    return await provider.search(request, config)
+    return await SearchProviderRouter().search(
+        request, _research_plan_from_config(config), config
+    )

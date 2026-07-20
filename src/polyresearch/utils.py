@@ -58,6 +58,7 @@ async def tavily_search(
     end_date: Annotated[str | None, InjectedToolArg] = None,
     target_source_type: Annotated[str | None, InjectedToolArg] = None,
     query_rationale: Annotated[str | None, InjectedToolArg] = None,
+    fallback_from: Annotated[str | None, InjectedToolArg] = None,
     config: RunnableConfig = None
 ) -> str:
     """Fetch source records and exact passages from Tavily search API.
@@ -129,6 +130,7 @@ async def tavily_search(
         locale=locale,
         target_source_type=target_source_type,
         query_rationale=query_rationale,
+        fallback_from=fallback_from,
         start_date=start_date,
         end_date=end_date,
         sources=sources,
@@ -177,6 +179,7 @@ async def _persist_tavily_ingestion(
     locale: str | None,
     target_source_type: str | None,
     query_rationale: str | None,
+    fallback_from: str | None,
     start_date: str | None,
     end_date: str | None,
     sources: list[SourceRecord],
@@ -206,6 +209,7 @@ async def _persist_tavily_ingestion(
             rationale=query_rationale,
             date_from=start_date,
             date_to=end_date,
+            fallback_from=fallback_from,
         )
         for query in queries
     ]

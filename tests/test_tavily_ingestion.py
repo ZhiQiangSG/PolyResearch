@@ -21,6 +21,7 @@ from polyresearch.search_providers import (
     SearchProviderRouter,
     SearchRequest,
     TavilySearchProvider,
+    planned_web_search,
 )
 from polyresearch.graph import _persist_non_tavily_tool_outputs
 
@@ -96,6 +97,59 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(Exception):
             router.route(SearchRequest("policy", "en", "official"), plan)
+        plan.ranked_languages[0].expected_source_types.append("bridge")
+        self.assertIsInstance(
+            router.route(SearchRequest("政策", "zh", "bridge"), plan),
+            TavilySearchProvider,
+        )
+
+    async def test_chinese_bailian_failure_records_explicit_tavily_fallback(self) -> None:
+        async def fake_search(*args, **kwargs):
+            return [
+                {
+                    "query": "政策",
+                    "results": [
+                        {
+                            "url": "https://example.test/policy",
+                            "title": "Policy update",
+                            "raw_content": "Primary policy evidence.",
+                        }
+                    ],
+                }
+            ]
+
+        original_search = utils.tavily_search_async
+        utils.tavily_search_async = fake_search
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
+            plan = _routing_plan().model_copy(update={"run_id": run.id})
+            try:
+                await repository.create_run(run)
+                payload = await planned_web_search.coroutine(
+                    "政策",
+                    "zh",
+                    "official",
+                    locale="zh-CN",
+                    query_rationale="Seek Chinese official evidence.",
+                    config={
+                        "configurable": {
+                            "run_id": str(run.id),
+                            "evidence_repository": repository,
+                            "research_plan": plan,
+                        }
+                    },
+                )
+                self.assertIn("polyresearch_evidence", payload)
+                records = await repository.list_query_records(run.id)
+                self.assertEqual([record.provider for record in records], ["bailian_web_search", "tavily"])
+                self.assertIsNotNone(records[0].failure)
+                self.assertEqual(records[1].fallback_from, "bailian_web_search")
+                self.assertEqual(records[1].language, "zh")
+                self.assertEqual(records[1].locale, "zh-CN")
+            finally:
+                repository.close()
+                utils.tavily_search_async = original_search
 
     async def test_bailian_loads_only_allowlisted_web_search_tool(self) -> None:
         captured_config = None
