@@ -26,7 +26,7 @@ from polyresearch.prompts import (
     research_system_prompt,
     transform_messages_into_research_topic_prompt,
 )
-from polyresearch.state import (
+from polyresearch.models import (
     AgentInputState,
     AgentState,
     ClarifyWithUser,

@@ -31,7 +31,7 @@ from tavily import AsyncTavilyClient
 
 from polyresearch.configuration import Configuration, SearchAPI
 from polyresearch.prompts import summarize_webpage_prompt
-from polyresearch.state import ResearchComplete, Summary
+from polyresearch.models import ResearchComplete, Summary
 
 # --- Tavily Search Tool Utils ---
 

@@ -1,20 +1,19 @@
-"""Compatibility imports for state contracts moved to :mod:`polyresearch.models`.
+"""Focused state and structured-output contracts for PolyResearch."""
 
-New code should import from ``polyresearch.models`` or one of its focused modules.
-"""
-
-from polyresearch.models import (
+from polyresearch.models.graph_state import (
     AgentInputState,
     AgentState,
+    ResearcherOutputState,
+    ResearcherState,
+    SupervisorState,
+    override_reducer,
+)
+from polyresearch.models.structured_outputs import (
     ClarifyWithUser,
     ConductResearch,
     ResearchComplete,
-    ResearcherOutputState,
-    ResearcherState,
     ResearchQuestion,
     Summary,
-    SupervisorState,
-    override_reducer,
 )
 
 __all__ = [
