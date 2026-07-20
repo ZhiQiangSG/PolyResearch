@@ -1,56 +1,77 @@
 import os
 import re
-from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_MODEL_ID_PATTERN = re.compile(r"qwen[a-z0-9._-]*", re.IGNORECASE)
 
 
-class ModelProvider(str, Enum):
-    """Model transport supported by this application."""
+BAILIAN_WEB_SEARCH_MCP_URL = (
+    "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp"
+)
 
-    QWEN_OPENAI_COMPATIBLE = "qwen_openai_compatible"
+
+class BailianAuthenticationConfig(BaseModel):
+    """Bearer-token configuration for the Bailian MCP service."""
+
+    api_key: str | None = Field(default=None, repr=False)
+    api_key_env_var: str = Field(default="DASHSCOPE_API_KEY", min_length=1)
+    scheme: Literal["bearer"] = "bearer"
 
 
-class SearchAPI(Enum):
-    """Enumeration of available search API providers."""
-    
-    TAVILY = "tavily"
-    NONE = "none"
+class BailianWebSearchConfig(BaseModel):
+    """Narrow configuration for Bailian's Chinese web-search MCP service only."""
 
-class MCPConfig(BaseModel):
-    """Configuration for Model Context Protocol (MCP) servers."""
-    
-    # The URL of the MCP server
-    url: Optional[str] = Field(default=None)
-    # The tools to make available to the LLM
-    tools: Optional[list[str]] = Field(default=None)
-    # Whether the MCP server requires authentication
-    auth_required: Optional[bool] = Field(default=False)
+    server_url: str = Field(default=BAILIAN_WEB_SEARCH_MCP_URL)
+    tool_name: str = Field(default="web_search")
+    authentication: BailianAuthenticationConfig = Field(
+        default_factory=BailianAuthenticationConfig
+    )
+    timeout_seconds: float = Field(default=30, gt=0, le=120)
+    max_requests_per_second: float = Field(default=15, gt=0, le=15)
+
+    @field_validator("server_url")
+    @classmethod
+    def validate_server_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.netloc or not parsed.path.endswith("/mcp"):
+            raise ValueError("Bailian MCP server_url must be an absolute HTTPS /mcp URL")
+        return value
+
+    @field_validator("tool_name")
+    @classmethod
+    def validate_allowlisted_tool(cls, value: str) -> str:
+        if value != "web_search":
+            raise ValueError("Bailian Web Search may only load the 'web_search' MCP tool")
+        return value
 
 class Configuration(BaseModel):
     """Main configuration class for the Deep Research agent."""
-    
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     # General Configuration
     max_structured_output_retries: int = Field(default=3)
     allow_clarification: bool = Field(default=True)
     max_concurrent_research_units: int = Field(default=5)
 
     # Research Configuration
-    search_api: SearchAPI = Field(default=SearchAPI.TAVILY)
-    max_researcher_iterations: int = Field(default=6)
-    max_react_tool_calls: int = Field(default=10)
+    max_researcher_iterations: int = Field(default=3)
+    max_react_tool_calls: int = Field(default=5)
+    max_queries_per_run: int = Field(default=12, ge=1, le=15)
+    max_source_fetches_per_run: int = Field(default=20, ge=1, le=25)
+    allowed_source_domains: list[str] = Field(default_factory=list)
+    blocked_source_domains: list[str] = Field(default_factory=list)
+    retain_raw_tool_output: bool = Field(default=True)
+    retain_raw_source_content: bool = Field(default=True)
+    redact_persisted_secrets: bool = Field(default=True)
+
     # Model Configuration
-    model_provider: ModelProvider = Field(default=ModelProvider.QWEN_OPENAI_COMPATIBLE)
     qwen_base_url: str = Field(default=DEFAULT_QWEN_BASE_URL)
-    summarization_model: str = Field(default="qwen3.6-plus")
-    summarization_model_max_tokens: int = Field(default=8192)
-    max_content_length: int = Field(default=50000)
     research_model: str = Field(default="qwen3.7-max")
     research_model_max_tokens: int = Field(default=10000)
     compression_model: str = Field(default="qwen3.7-plus")
@@ -58,9 +79,8 @@ class Configuration(BaseModel):
     final_report_model: str = Field(default="qwen3.7-plus")
     final_report_model_max_tokens: int = Field(default=10000)
 
-    # MCP server configuration
-    mcp_config: Optional[MCPConfig] = Field(default=None)
-    mcp_prompt: Optional[str] = Field(default=None)
+    # Bailian is the only MCP integration exposed during Milestone 3.
+    bailian_web_search: Optional[BailianWebSearchConfig] = Field(default=None)
 
     @field_validator("qwen_base_url")
     @classmethod
@@ -78,7 +98,6 @@ class Configuration(BaseModel):
         return normalized
 
     @field_validator(
-        "summarization_model",
         "research_model",
         "compression_model",
         "final_report_model",
@@ -110,16 +129,25 @@ class Configuration(BaseModel):
     def from_runnable_config(
         cls, config: Optional[RunnableConfig] = None
     ) -> "Configuration":
-        """Create a Configuration instance from a RunnableConfig."""
+        """Create a Configuration instance from runtime overrides and the environment.
+
+        Bailian is enabled consistently for CLI, graph, and API callers when its
+        default credential is available. An explicit runtime or environment
+        Bailian setting always takes precedence, including an explicit ``None``.
+        """
         configurable = config.get("configurable", {}) if config else {}
         field_names = list(cls.model_fields.keys())
         values: dict[str, Any] = {
             field_name: os.environ.get(field_name.upper(), configurable.get(field_name))
             for field_name in field_names
         }
+        bailian_explicitly_configured = (
+            "bailian_web_search" in configurable
+            or "BAILIAN_WEB_SEARCH" in os.environ
+        )
+        if (
+            not bailian_explicitly_configured
+            and os.getenv(BailianAuthenticationConfig().api_key_env_var)
+        ):
+            values["bailian_web_search"] = BailianWebSearchConfig()
         return cls(**{k: v for k, v in values.items() if v is not None})
-
-    class Config:
-        """Pydantic configuration."""
-        
-        arbitrary_types_allowed = True
