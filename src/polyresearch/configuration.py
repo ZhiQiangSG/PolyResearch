@@ -24,7 +24,7 @@ class SearchAPI(Enum):
     NONE = "none"
 
 class MCPConfig(BaseModel):
-    """Configuration for Model Context Protocol (MCP) servers."""
+    """Deprecated legacy MCP configuration; not exposed to research agents."""
     
     # The URL of the MCP server
     url: Optional[str] = Field(default=None)
@@ -32,6 +32,52 @@ class MCPConfig(BaseModel):
     tools: Optional[list[str]] = Field(default=None)
     # Whether the MCP server requires authentication
     auth_required: Optional[bool] = Field(default=False)
+
+
+BAILIAN_WEB_SEARCH_MCP_URL = (
+    "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp"
+)
+
+
+class BailianWebSearchConfig(BaseModel):
+    """Narrow configuration for Bailian's Chinese web-search MCP service only."""
+
+    server_url: str = Field(default=BAILIAN_WEB_SEARCH_MCP_URL)
+    tool_name: str = Field(default="web_search")
+    api_key: str | None = Field(default=None, repr=False)
+    locale: str = Field(default="zh-CN")
+    query_language: str = Field(default="zh")
+    timeout_seconds: float = Field(default=30, gt=0, le=120)
+    max_requests_per_second: float = Field(default=15, gt=0, le=15)
+
+    @field_validator("server_url")
+    @classmethod
+    def validate_server_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.netloc or not parsed.path.endswith("/mcp"):
+            raise ValueError("Bailian MCP server_url must be an absolute HTTPS /mcp URL")
+        return value
+
+    @field_validator("tool_name")
+    @classmethod
+    def validate_allowlisted_tool(cls, value: str) -> str:
+        if value != "web_search":
+            raise ValueError("Bailian Web Search may only load the 'web_search' MCP tool")
+        return value
+
+    @field_validator("locale")
+    @classmethod
+    def validate_chinese_locale(cls, value: str) -> str:
+        if not value.lower().startswith("zh"):
+            raise ValueError("Bailian Web Search locale must be Chinese")
+        return value
+
+    @field_validator("query_language")
+    @classmethod
+    def validate_chinese_query_language(cls, value: str) -> str:
+        if value.lower() not in {"zh", "zh-cn", "zh-hans"}:
+            raise ValueError("Bailian Web Search query_language must be Chinese")
+        return value
 
 class Configuration(BaseModel):
     """Main configuration class for the Deep Research agent."""
@@ -56,7 +102,11 @@ class Configuration(BaseModel):
     final_report_model: str = Field(default="qwen3.7-plus")
     final_report_model_max_tokens: int = Field(default=10000)
 
-    # MCP server configuration
+    # Bailian is the only MCP integration exposed during Milestone 3.
+    bailian_web_search: Optional[BailianWebSearchConfig] = Field(default=None)
+
+    # Deprecated legacy MCP configuration retained for config-file compatibility.
+    # It is intentionally not loaded by ``get_all_tools``.
     mcp_config: Optional[MCPConfig] = Field(default=None)
     mcp_prompt: Optional[str] = Field(default=None)
 

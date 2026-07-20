@@ -559,6 +559,44 @@ async def load_mcp_tools(
     return configured_tools
 
 
+async def load_bailian_web_search_tool(
+    config: RunnableConfig,
+    existing_tool_names: set[str],
+) -> list[BaseTool]:
+    """Load only the explicitly allowlisted Bailian Web Search MCP tool.
+
+    Generic MCP configuration is deliberately not consulted here: Milestone 3
+    permits Bailian Web Search only, and only for Chinese-source discovery.
+    """
+    configurable = Configuration.from_runnable_config(config)
+    bailian = configurable.bailian_web_search
+    if bailian is None or bailian.tool_name in existing_tool_names:
+        return []
+
+    api_key = bailian.api_key or os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        return []
+    mcp_server_config = {
+        "bailian_web_search": {
+            "url": bailian.server_url,
+            "headers": {"Authorization": f"Bearer {api_key}"},
+            "transport": "streamable_http",
+        }
+    }
+    try:
+        client = MultiServerMCPClient(mcp_server_config)
+        available_tools = await client.get_tools()
+    except Exception:
+        return []
+
+    # Never expose an arbitrary server tool, even if the server advertises it.
+    return [
+        mcp_tool
+        for mcp_tool in available_tools
+        if mcp_tool.name == bailian.tool_name
+    ]
+
+
 # --- Tool Utils ---
 
 async def get_search_tool(search_api: SearchAPI):
@@ -611,9 +649,8 @@ async def get_all_tools(config: RunnableConfig):
         for tool in tools
     }
     
-    # Add MCP tools if configured
-    mcp_tools = await load_mcp_tools(config, existing_tool_names)
-    tools.extend(mcp_tools)
+    # Bailian Web Search is the sole MCP integration exposed in this phase.
+    tools.extend(await load_bailian_web_search_tool(config, existing_tool_names))
     
     return tools
 
