@@ -15,7 +15,10 @@ from polyresearch.models import (
     VerificationResult,
     VerificationStatus,
 )
-from polyresearch.provenance_graph import build_provenance_graph
+from polyresearch.provenance_graph import (
+    build_provenance_graph,
+    trace_report_statements_to_evidence,
+)
 from polyresearch.repositories import SqliteEvidenceRepository
 
 
@@ -40,6 +43,11 @@ class ProvenanceGraphTests(unittest.IsolatedAsyncioTestCase):
                 run_id=run.id, rendered_text="Policy changed.", claim_ids=[claim.id],
                 citation_ids=[passage.id], verification_status=VerificationStatus.SUPPORTED,
             )
+            second_statement = ReportStatement(
+                run_id=run.id, rendered_text="The policy changed, according to the source.",
+                claim_ids=[claim.id], citation_ids=[passage.id],
+                verification_status=VerificationStatus.SUPPORTED,
+            )
             query = QueryRecord(
                 run_id=run.id, query="policy", language="en", provider="tavily",
                 result_url=source.canonical_url,
@@ -53,7 +61,7 @@ class ProvenanceGraphTests(unittest.IsolatedAsyncioTestCase):
                 await repository.append_claims(run.id, [claim])
                 await repository.append_evidence_links(run.id, [link])
                 await repository.append_verification_results(run.id, [verification])
-                await repository.append_report_statements(run.id, [statement])
+                await repository.append_report_statements(run.id, [statement, second_statement])
 
                 graph = await build_provenance_graph(repository, run.id)
 
@@ -76,5 +84,11 @@ class ProvenanceGraphTests(unittest.IsolatedAsyncioTestCase):
                 found_by = next(edge for edge in graph.edges if edge.kind == "FOUND_BY")
                 self.assertEqual(found_by.from_node_id, f"query:{query.id}")
                 self.assertEqual(found_by.to_node_id, f"source:{source.id}")
+                paths_by_statement = trace_report_statements_to_evidence(graph)
+                self.assertEqual(set(paths_by_statement), {statement.id, second_statement.id})
+                for statement_id, paths in paths_by_statement.items():
+                    self.assertTrue(paths, f"Report statement {statement_id} has no evidence path")
+                    self.assertEqual(paths[0].claim_id, claim.id)
+                    self.assertEqual(paths[0].passage_id, passage.id)
             finally:
                 repository.close()

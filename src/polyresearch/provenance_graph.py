@@ -8,7 +8,12 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from polyresearch.models import ProvenanceGraph, ProvenanceGraphEdge, ProvenanceGraphNode
+from polyresearch.models import (
+    ProvenanceGraph,
+    ProvenanceGraphEdge,
+    ProvenanceGraphNode,
+    ReportStatementEvidencePath,
+)
 from polyresearch.repositories.base import EvidenceRepository
 
 
@@ -34,6 +39,43 @@ def _edge(
         kind=kind,  # type: ignore[arg-type]
         attributes=attributes or {},
     )
+
+
+def trace_report_statements_to_evidence(
+    graph: ProvenanceGraph,
+) -> dict[UUID, list[ReportStatementEvidencePath]]:
+    """Traverse each report statement backward to its original evidence passages."""
+    nodes_by_id = {node.node_id: node for node in graph.nodes}
+    rendered_by_statement: dict[str, list[ProvenanceGraphEdge]] = {}
+    assertions_by_claim: dict[str, list[ProvenanceGraphEdge]] = {}
+    for edge in graph.edges:
+        if edge.kind == "RENDERED_AS":
+            rendered_by_statement.setdefault(edge.to_node_id, []).append(edge)
+        elif edge.kind == "ASSERTS":
+            assertions_by_claim.setdefault(edge.to_node_id, []).append(edge)
+
+    paths: dict[UUID, list[ReportStatementEvidencePath]] = {}
+    for node in graph.nodes:
+        if node.kind != "report_statement":
+            continue
+        statement_paths: list[ReportStatementEvidencePath] = []
+        for rendered_edge in rendered_by_statement.get(node.node_id, []):
+            claim_node = nodes_by_id.get(rendered_edge.from_node_id)
+            if claim_node is None:
+                continue
+            for assertion_edge in assertions_by_claim.get(claim_node.node_id, []):
+                passage_node = nodes_by_id.get(assertion_edge.from_node_id)
+                if passage_node is None:
+                    continue
+                statement_paths.append(
+                    ReportStatementEvidencePath(
+                        report_statement_id=node.artifact_id,
+                        claim_id=claim_node.artifact_id,
+                        passage_id=passage_node.artifact_id,
+                    )
+                )
+        paths[node.artifact_id] = statement_paths
+    return paths
 
 
 async def build_provenance_graph(

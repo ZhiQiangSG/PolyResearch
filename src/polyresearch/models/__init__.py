@@ -57,6 +57,7 @@ from polyresearch.models.provenance_graph import (
     ProvenanceGraph,
     ProvenanceGraphEdge,
     ProvenanceGraphNode,
+    ReportStatementEvidencePath,
 )
 
 __all__ = [
@@ -81,6 +82,7 @@ __all__ = [
     "ProvenanceGraph",
     "ProvenanceGraphEdge",
     "ProvenanceGraphNode",
+    "ReportStatementEvidencePath",
     "QueryRecord",
     "LanguageSelectionAssessment",
     "LanguageExpansionDecision",

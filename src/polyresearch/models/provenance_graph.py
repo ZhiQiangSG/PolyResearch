@@ -49,6 +49,14 @@ class ProvenanceGraphEdge(BaseModel):
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
+class ReportStatementEvidencePath(BaseModel):
+    """One auditable report-statement → claim → original-passage traversal."""
+
+    report_statement_id: UUID
+    claim_id: UUID
+    passage_id: UUID
+
+
 class ProvenanceGraph(BaseModel):
     """A SQLite-compatible graph-shaped view over durable run artifacts."""
 
