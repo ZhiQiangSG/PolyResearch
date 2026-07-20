@@ -171,7 +171,11 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
 
             async def ainvoke(self, arguments, config=None):
                 self.arguments = arguments
-                return '{"results": [{"title": "中文官方来源"}]}'
+                return (
+                    '{"results": [{"title": "中文官方来源", '
+                    '"url": "https://example.test/chinese-policy", '
+                    '"raw_content": "中文官方证据。"}]}'
+                )
 
         fake_bailian_tool = FakeBailianTool()
 
@@ -209,7 +213,8 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                     "policy bridge coverage", "en", "news", locale="en-US", config=config
                 )
                 records = await repository.list_query_records(run.id)
-                self.assertIn("中文官方来源", chinese_result)
+                self.assertIn("polyresearch_evidence", chinese_result)
+                self.assertIn("中文官方证据", chinese_result)
                 self.assertIn("polyresearch_evidence", english_result)
                 self.assertEqual(fake_bailian_tool.arguments, {"query": "政策"})
                 self.assertEqual(
@@ -218,6 +223,13 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(records[0].language, "zh")
                 self.assertEqual(records[1].language, "en")
+                self.assertEqual(len(await repository.list_sources(run.id)), 2)
+                self.assertEqual(len(await repository.list_source_versions(run.id)), 2)
+                self.assertEqual(len(await repository.list_passages(run.id)), 2)
+                attachments = await repository.list_provenance_attachments(run.id)
+                self.assertTrue(
+                    any(attachment.provider == "bailian_web_search" for attachment in attachments)
+                )
             finally:
                 repository.close()
                 utils.tavily_search_async = original_tavily_search

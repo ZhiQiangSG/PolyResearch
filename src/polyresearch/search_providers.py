@@ -1,13 +1,22 @@
 """Provider-routed discovery constrained by the persisted multilingual plan."""
 
 import asyncio
+import hashlib
+import json
 from dataclasses import dataclass
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import ToolException, tool
 
 from polyresearch.configuration import Configuration
-from polyresearch.models import QueryRecord, ResearchPlan
+from polyresearch.models import (
+    EvidencePassage,
+    ProvenanceAttachment,
+    QueryRecord,
+    ResearchPlan,
+    SourceRecord,
+    SourceVersion,
+)
 from polyresearch.repositories import RunContext
 
 
@@ -75,8 +84,15 @@ class BailianWebSearchProvider:
             tools[0].ainvoke({"query": request.query}, config=config),
             timeout=bailian.timeout_seconds,
         )
-        await _persist_bailian_query_record(request, config)
-        return result
+        sources, passages = await _persist_bailian_ingestion(request, config, result)
+        return json.dumps(
+            {
+                "type": "polyresearch_evidence",
+                "sources": [source.model_dump(mode="json") for source in sources],
+                "passages": [passage.model_dump(mode="json") for passage in passages],
+            },
+            ensure_ascii=False,
+        )
 
 
 async def _persist_bailian_query_record(
@@ -110,6 +126,138 @@ async def _persist_bailian_query_record(
             )
         ],
     )
+
+
+def _bailian_result_rows(result: object) -> list[dict]:
+    """Extract common MCP Web Search result shapes without trusting tool content."""
+    payload = result
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(payload, dict):
+        return []
+    for key in ("results", "items", "data"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+async def _persist_bailian_ingestion(
+    request: SearchRequest, config: RunnableConfig, raw_result: object
+) -> tuple[list[SourceRecord], list[EvidencePassage]]:
+    """Normalize Bailian discovery into the same typed ledger artifacts as Tavily."""
+    try:
+        context = RunContext.from_runnable_config(config)
+    except ValueError:
+        return [], []
+
+    # Keep remote output immutable for audit while treating only extracted fields as data.
+    raw_output = (
+        raw_result
+        if isinstance(raw_result, str)
+        else json.dumps(raw_result, ensure_ascii=False, sort_keys=True, default=str)
+    )
+    await context.repository.append_provenance_attachments(
+        context.run_id,
+        [
+            ProvenanceAttachment(
+                run_id=context.run_id,
+                provider="bailian_web_search",
+                tool_name="web_search",
+                raw_output=raw_output,
+            )
+        ],
+    )
+
+    # Reuse the same URL and passage semantics as the direct Tavily path.
+    from polyresearch.utils import _chunk_evidence_passages, _redirect_chain, canonicalize_url
+
+    sources: list[SourceRecord] = []
+    source_versions: list[SourceVersion] = []
+    passages: list[EvidencePassage] = []
+    query_records: list[QueryRecord] = []
+    seen_urls: set[str] = set()
+    for result_rank, row in enumerate(_bailian_result_rows(raw_result), start=1):
+        discovered_url = row.get("url") or row.get("link") or row.get("source_url")
+        if not isinstance(discovered_url, str):
+            continue
+        try:
+            canonical_url = canonicalize_url(discovered_url)
+        except ValueError:
+            continue
+        query_records.append(
+            QueryRecord(
+                run_id=context.run_id,
+                research_unit_id=context.research_unit_id,
+                query=request.query,
+                language=request.language,
+                locale=request.locale,
+                provider="bailian_web_search",
+                target_source_type=request.target_source_type,
+                rationale=request.rationale,
+                date_from=request.date_from,
+                date_to=request.date_to,
+                result_rank=result_rank,
+                result_url=canonical_url,
+            )
+        )
+        if canonical_url in seen_urls:
+            continue
+        seen_urls.add(canonical_url)
+        original_text = (
+            row.get("raw_content")
+            or row.get("content")
+            or row.get("snippet")
+            or row.get("text")
+        )
+        if not isinstance(original_text, str) or not original_text.strip():
+            continue
+        content_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
+        source = SourceRecord(
+            canonical_url=canonical_url,
+            discovered_url=discovered_url,
+            redirect_chain=_redirect_chain(row, discovered_url),
+            title=row.get("title") or canonical_url,
+            language=request.language,
+            source_type=request.target_source_type,
+            content_hash=content_hash,
+            research_unit_id=context.research_unit_id,
+        )
+        sources.append(source)
+        source_versions.append(
+            SourceVersion(
+                source_id=source.id,
+                version_number=1,
+                content_hash=content_hash,
+                raw_content=original_text,
+            )
+        )
+        passages.extend(_chunk_evidence_passages(source, original_text))
+
+    if not query_records:
+        query_records = [
+            QueryRecord(
+                run_id=context.run_id,
+                research_unit_id=context.research_unit_id,
+                query=request.query,
+                language=request.language,
+                locale=request.locale,
+                provider="bailian_web_search",
+                target_source_type=request.target_source_type,
+                rationale=request.rationale,
+                date_from=request.date_from,
+                date_to=request.date_to,
+            )
+        ]
+    await context.repository.append_query_records(context.run_id, query_records)
+    if sources:
+        await context.repository.append_sources(context.run_id, sources)
+        await context.repository.append_source_versions(context.run_id, source_versions)
+        await context.repository.append_passages(context.run_id, passages)
+    return sources, passages
 
 
 class SearchProviderRouter:
