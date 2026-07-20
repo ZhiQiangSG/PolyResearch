@@ -309,19 +309,20 @@ class VerificationResult(BaseModel):
     evidence_link_ids: list[UUID] = Field(default_factory=list)
 
 
-class VerificationDraft(BaseModel):
-    """Model judgement before it is bound to existing evidence links."""
+class ClaimClusterVerificationDraft(BaseModel):
+    """Qwen judgement for a deterministic cluster of related claims."""
 
-    claim_id: UUID
+    cluster_id: UUID
+    claim_ids: list[UUID] = Field(min_length=1)
     status: VerificationStatus
     confidence: float = Field(ge=0, le=1)
     rationale: str = Field(min_length=1)
 
 
-class ClaimVerificationResult(BaseModel):
-    """Structured verification output for a batch of persisted claims."""
+class ClaimClusterVerificationResult(BaseModel):
+    """Structured verification output for deterministic claim clusters."""
 
-    results: list[VerificationDraft] = Field(default_factory=list)
+    clusters: list[ClaimClusterVerificationDraft] = Field(default_factory=list)
 
 
 class ReportStatement(BaseModel):

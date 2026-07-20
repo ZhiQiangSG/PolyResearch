@@ -233,18 +233,19 @@ After each search tool call, use think_tool to analyze the results:
 """
 
 
-claim_verification_prompt = """Verify each claim against only its linked, original-language evidence passages.
+claim_cluster_verification_prompt = """Verify each deterministic claim cluster against only its linked, original-language evidence passages.
 
 <VerificationLedger>
 {verification_ledger}
 </VerificationLedger>
 
-Return only data matching the requested structured schema. Produce exactly one result for every supplied claim ID.
+Return only data matching the requested structured schema. Produce exactly one result for every supplied cluster ID, retaining its exact supplied claim IDs.
 
 Verification rules:
-- Mark `supported` only when the linked passages directly support the full claim within its stated scope.
-- Mark `partially_supported` when a material qualifier, value, scope, date, place, population, or definition is not supported.
-- Mark `contradicted` only when the linked evidence directly conflicts after accounting for scope, date, location, definitions, methodology, sample, and translation.
+- Evaluate agreement and disagreement across the cluster; do not treat copies, mirrors, or shared-origin sources as independent corroboration.
+- Mark `supported` only when the linked passages directly support every material proposition shared by the cluster within its stated scope.
+- Mark `partially_supported` when a material qualifier, value, scope, date, place, population, or definition is not supported across the cluster.
+- Mark `contradicted` only when linked evidence directly conflicts after accounting for scope, date, location, definitions, methodology, sample, and translation.
 - Use `not_comparable` for evidence that cannot be compared on those dimensions, `outdated` where temporal fit makes the claim stale, and `insufficient_evidence` otherwise.
 - Treat translation uncertainty as a verification factor. Preserve uncertainty in the rationale; do not upgrade confidence because a translation is fluent.
 - Do not use any facts outside the ledger and do not invent evidence links, sources, passages, or claim IDs.

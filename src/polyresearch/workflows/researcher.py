@@ -14,7 +14,7 @@ from polyresearch.evidence.claim_clustering import cluster_claims
 from polyresearch.configuration import Configuration
 from polyresearch.evidence.entity_resolution import resolve_claim_entities
 from polyresearch.models import (
-    Claim, ClaimExtractionDraft, ClaimExtractionResult, ClaimVerificationResult,
+    Claim, ClaimExtractionDraft, ClaimExtractionResult, ClaimClusterVerificationResult,
     EvidenceLink, EvidencePassage, ResearcherOutputState, ResearcherState,
     SourceRecord, TranslationDraft, TranslationRecord, VerificationResult,
     VerificationStatus,
@@ -24,7 +24,7 @@ from polyresearch.nodes.provenance import (
     persist_non_tavily_tool_outputs as _persist_non_tavily_tool_outputs,
     serialize_artifacts as _serialize_artifacts,
 )
-from polyresearch.prompts import claim_verification_prompt, research_system_prompt
+from polyresearch.prompts import claim_cluster_verification_prompt, research_system_prompt
 from polyresearch.retrieval.source_ingestion import languages_match
 from polyresearch.runtime.model_utils import create_qwen_chat_model
 from polyresearch.retrieval.search_utils import select_citable_passages
@@ -385,14 +385,14 @@ async def translate_claim_evidence(state: ResearcherState, config: RunnableConfi
     }
 
 
-async def verify_claims(state: ResearcherState, config: RunnableConfig):
-    """Persist one conservative, passage-linked verification result per claim."""
+async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
+    """Verify deterministic claim clusters and persist claim-addressable results."""
     context, sources, passages, claims, evidence_links, existing_results = (
         await _load_evidence_ledger(config)
     )
     verified_claim_ids = {result.claim_id for result in existing_results}
-    claims_to_verify = [claim for claim in claims if claim.id not in verified_claim_ids]
-    if not claims_to_verify:
+    unverified_claims = [claim for claim in claims if claim.id not in verified_claim_ids]
+    if not unverified_claims:
         return {
             "sources": sources,
             "passages": passages,
@@ -404,27 +404,35 @@ async def verify_claims(state: ResearcherState, config: RunnableConfig):
     for link in evidence_links:
         links_by_claim_id.setdefault(link.claim_id, []).append(link)
     passages_by_id = {passage.id: passage for passage in passages}
-    verifiable_claims = [
-        claim
-        for claim in claims_to_verify
-        if links_by_claim_id.get(claim.id)
-        and all(
-            link.passage_id in passages_by_id for link in links_by_claim_id[claim.id]
-        )
-    ]
+    clusters: dict[UUID, list[Claim]] = {}
+    for claim in unverified_claims:
+        clusters.setdefault(claim.claim_cluster_id or claim.id, []).append(claim)
     results: list[VerificationResult] = []
-    unverifiable_claims = [claim for claim in claims_to_verify if claim not in verifiable_claims]
-    results.extend(
-        VerificationResult(
-            claim_id=claim.id,
-            status=VerificationStatus.INSUFFICIENT_EVIDENCE,
-            confidence=0.0,
-            rationale="No complete persisted claim-to-passage evidence link is available.",
+    verifiable_clusters = {
+        cluster_id: cluster_claims
+        for cluster_id, cluster_claims in clusters.items()
+        if any(
+            links_by_claim_id.get(claim.id)
+            and all(link.passage_id in passages_by_id for link in links_by_claim_id[claim.id])
+            for claim in cluster_claims
         )
-        for claim in unverifiable_claims
-    )
-    if verifiable_claims:
-        verifiable_claim_ids = {claim.id for claim in verifiable_claims}
+    }
+    for cluster_id, cluster_claims in clusters.items():
+        if cluster_id in verifiable_clusters:
+            continue
+        results.extend(
+            VerificationResult(
+                claim_id=claim.id,
+                status=VerificationStatus.INSUFFICIENT_EVIDENCE,
+                confidence=0.0,
+                rationale="No persisted claim-to-passage evidence is available for this claim cluster.",
+            )
+            for claim in cluster_claims
+        )
+    if verifiable_clusters:
+        verifiable_claim_ids = {
+            claim.id for cluster_claims in verifiable_clusters.values() for claim in cluster_claims
+        }
         relevant_passage_ids = {
             link.passage_id
             for claim_id in verifiable_claim_ids
@@ -436,15 +444,21 @@ async def verify_claims(state: ResearcherState, config: RunnableConfig):
         relevant_source_ids = {passage.source_id for passage in relevant_passages}
         verification_ledger = json.dumps(
             {
-                "claims": _serialize_artifacts(verifiable_claims, Claim),
-                "evidence_links": _serialize_artifacts(
-                    [
-                        link
-                        for claim_id in verifiable_claim_ids
-                        for link in links_by_claim_id[claim_id]
-                    ],
-                    EvidenceLink,
-                ),
+                "clusters": [
+                    {
+                        "cluster_id": str(cluster_id),
+                        "claims": _serialize_artifacts(cluster_claims, Claim),
+                        "evidence_links": _serialize_artifacts(
+                            [
+                                link
+                                for claim in cluster_claims
+                                for link in links_by_claim_id.get(claim.id, [])
+                            ],
+                            EvidenceLink,
+                        ),
+                    }
+                    for cluster_id, cluster_claims in verifiable_clusters.items()
+                ],
                 "passages": _serialize_artifacts(relevant_passages, EvidencePassage),
                 "sources": _serialize_artifacts(
                     [source for source in sources if source.id in relevant_source_ids],
@@ -459,42 +473,50 @@ async def verify_claims(state: ResearcherState, config: RunnableConfig):
             configurable.compression_model,
             configurable.compression_model_max_tokens,
             config,
-        ).with_structured_output(ClaimVerificationResult).with_retry(
+        ).with_structured_output(ClaimClusterVerificationResult).with_retry(
             stop_after_attempt=configurable.max_structured_output_retries
         )
         try:
             response = cast(
-                ClaimVerificationResult,
+                ClaimClusterVerificationResult,
                 await verifier.ainvoke(
-                    [HumanMessage(content=claim_verification_prompt.format(
+                    [HumanMessage(content=claim_cluster_verification_prompt.format(
                         verification_ledger=verification_ledger
                     ))]
                 ),
             )
-            drafts_by_claim_id = {draft.claim_id: draft for draft in response.results}
+            drafts_by_cluster_id = {
+                draft.cluster_id: draft
+                for draft in response.clusters
+                if draft.cluster_id in verifiable_clusters
+                and set(draft.claim_ids)
+                == {claim.id for claim in verifiable_clusters[draft.cluster_id]}
+            }
         except Exception:
-            drafts_by_claim_id = {}
-        for claim in verifiable_claims:
-            draft = drafts_by_claim_id.get(claim.id)
+            drafts_by_cluster_id = {}
+        for cluster_id, cluster_claims in verifiable_clusters.items():
+            draft = drafts_by_cluster_id.get(cluster_id)
             if draft is None:
-                results.append(
+                results.extend(
                     VerificationResult(
                         claim_id=claim.id,
                         status=VerificationStatus.INSUFFICIENT_EVIDENCE,
                         confidence=0.0,
-                        rationale="Verification did not return a valid result for this claim.",
-                        evidence_link_ids=[link.id for link in links_by_claim_id[claim.id]],
+                        rationale="Verification did not return a valid result for this claim cluster.",
+                        evidence_link_ids=[link.id for link in links_by_claim_id.get(claim.id, [])],
                     )
+                    for claim in cluster_claims
                 )
                 continue
-            results.append(
+            results.extend(
                 VerificationResult(
                     claim_id=claim.id,
                     status=draft.status,
                     confidence=draft.confidence,
                     rationale=draft.rationale,
-                    evidence_link_ids=[link.id for link in links_by_claim_id[claim.id]],
+                    evidence_link_ids=[link.id for link in links_by_claim_id.get(claim.id, [])],
                 )
+                for claim in cluster_claims
             )
     await context.repository.append_verification_results(context.run_id, results)
     return {
@@ -517,15 +539,17 @@ researcher_builder.add_node("researcher", researcher)                 # Main res
 researcher_builder.add_node("researcher_tools", researcher_tools)     # Tool execution handler
 researcher_builder.add_node("extract_claims", extract_claims)         # Claim extraction
 researcher_builder.add_node("translate_claim_evidence", translate_claim_evidence)
-researcher_builder.add_node("verify_claims", verify_claims)
+researcher_builder.add_node("verify_claim_clusters", verify_claim_clusters)
 
 # Define researcher workflow edges
 researcher_builder.add_edge(START, "researcher")           # Entry point to researcher
 researcher_builder.add_edge("extract_claims", "translate_claim_evidence")
-researcher_builder.add_edge("translate_claim_evidence", "verify_claims")
-researcher_builder.add_edge("verify_claims", END)
+researcher_builder.add_edge("translate_claim_evidence", "verify_claim_clusters")
+researcher_builder.add_edge("verify_claim_clusters", END)
+
+# Compatibility alias for callers that used the Milestone 5 node name.
+verify_claims = verify_claim_clusters
 
 # Compile researcher subgraph for parallel execution by supervisor
 researcher_subgraph = researcher_builder.compile()
-
 

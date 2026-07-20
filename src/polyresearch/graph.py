@@ -21,6 +21,7 @@ from polyresearch.workflows.researcher import (
     researcher_tools,
     translate_claim_evidence,
     unknown_tool_observation,
+    verify_claim_clusters,
     verify_claims,
 )
 from polyresearch.workflows.supervisor import supervisor, supervisor_subgraph, supervisor_tools
@@ -29,7 +30,7 @@ __all__ = [
     "graph", "initialize_research_run", "clarify_with_user", "write_research_brief",
     "multilingual_planner", "language_gap_analysis", "supervisor", "supervisor_tools",
     "supervisor_subgraph", "researcher", "researcher_tools", "researcher_subgraph",
-    "extract_claims", "translate_claim_evidence", "verify_claims",
+    "extract_claims", "translate_claim_evidence", "verify_claim_clusters", "verify_claims",
     "execute_tool_safely", "unknown_tool_observation", "final_report_generation",
     "_build_report_statements", "_render_statement_markdown",
 ]

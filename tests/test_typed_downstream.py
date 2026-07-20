@@ -8,7 +8,7 @@ from polyresearch.models import (
     Claim,
     ClaimExtractionDraft,
     ClaimExtractionResult,
-    ClaimVerificationResult,
+    ClaimClusterVerificationResult,
     ClaimScope,
     EvidenceLink,
     EvidencePassage,
@@ -80,7 +80,7 @@ class _TranslationStub:
         return TranslationDraft(translated_text="The policy changed.", confidence=0.9)
 
 
-class _VerificationStub:
+class _ClusterVerificationStub:
     def with_structured_output(self, schema):
         return self
 
@@ -88,27 +88,25 @@ class _VerificationStub:
         return self
 
     async def ainvoke(self, messages):
-        ledger = messages[0].content
-        claim_id = next(
-            claim_id
-            for claim_id in [self.claim_id]
-            if str(claim_id) in ledger
-        )
-        return ClaimVerificationResult.model_validate(
+        self.messages = messages
+        return ClaimClusterVerificationResult.model_validate(
             {
-                "results": [
+                "clusters": [
                     {
-                        "claim_id": str(claim_id),
+                        "cluster_id": str(self.cluster_id),
+                        "claim_ids": [str(claim_id) for claim_id in self.claim_ids],
                         "status": "supported",
                         "confidence": 0.95,
-                        "rationale": "The cited passage directly states the claim.",
+                        "rationale": "The cited passages directly support the shared proposition.",
                     }
                 ]
             }
         )
 
-    def __init__(self, claim_id):
-        self.claim_id = claim_id
+    def __init__(self, cluster_id, claim_ids):
+        self.cluster_id = cluster_id
+        self.claim_ids = claim_ids
+        self.messages = None
 
 
 class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
@@ -205,7 +203,7 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 researcher_module.create_qwen_chat_model = original_factory
                 repository.close()
 
-    async def test_claim_verification_persists_typed_results(self) -> None:
+    async def test_claim_cluster_verification_persists_results_for_every_member(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")
             run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
@@ -219,14 +217,24 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 statement="The policy changed on 1 January.",
                 evidence_passage_ids=[passage.id],
                 extraction_confidence=0.9,
+                claim_cluster_id=uuid4(),
+            )
+            corroborating_claim = Claim(
+                statement="The policy was changed on January 1.",
+                evidence_passage_ids=[passage.id],
+                extraction_confidence=0.85,
+                claim_cluster_id=claim.claim_cluster_id,
             )
             original_factory = researcher_module.create_qwen_chat_model
-            researcher_module.create_qwen_chat_model = lambda *args, **kwargs: _VerificationStub(claim.id)
+            verifier = _ClusterVerificationStub(
+                claim.claim_cluster_id, [claim.id, corroborating_claim.id]
+            )
+            researcher_module.create_qwen_chat_model = lambda *args, **kwargs: verifier
             try:
                 await repository.create_run(run)
                 await repository.append_sources(run.id, [source])
                 await repository.append_passages(run.id, [passage])
-                await repository.append_claims(run.id, [claim])
+                await repository.append_claims(run.id, [claim, corroborating_claim])
                 await repository.append_evidence_links(
                     run.id,
                     [
@@ -234,18 +242,24 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                             claim_id=claim.id,
                             passage_id=passage.id,
                             relationship="supports",
-                        )
+                        ),
+                        EvidenceLink(
+                            claim_id=corroborating_claim.id,
+                            passage_id=passage.id,
+                            relationship="supports",
+                        ),
                     ],
                 )
 
-                result = await researcher_module.verify_claims(
+                result = await researcher_module.verify_claim_clusters(
                     {}, {"configurable": {"run_id": str(run.id), "evidence_repository": repository}}
                 )
 
                 persisted = await repository.list_verification_results(run.id)
-                self.assertEqual(len(persisted), 1)
-                self.assertEqual(persisted[0].claim_id, claim.id)
-                self.assertEqual(persisted[0].status, VerificationStatus.SUPPORTED)
+                self.assertEqual({item.claim_id for item in persisted}, {claim.id, corroborating_claim.id})
+                self.assertTrue(all(item.status is VerificationStatus.SUPPORTED for item in persisted))
+                self.assertIn(str(claim.claim_cluster_id), verifier.messages[0].content)
+                self.assertEqual(verifier.messages[0].content.count('"cluster_id"'), 1)
                 self.assertEqual(result["verification_results"], persisted)
             finally:
                 researcher_module.create_qwen_chat_model = original_factory
