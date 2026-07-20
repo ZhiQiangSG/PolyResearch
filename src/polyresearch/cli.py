@@ -30,6 +30,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SOURCE_ID",
         help="Limit --inspect-ledger output to one source UUID.",
     )
+    parser.add_argument(
+        "--inspect-trace",
+        metavar="RUN_ID",
+        help="Print complete provenance traces and gaps for one report statement.",
+    )
+    parser.add_argument(
+        "--report-statement-id",
+        metavar="STATEMENT_ID",
+        help="Required with --inspect-trace; identifies the report statement UUID.",
+    )
     return parser
 
 
@@ -123,10 +133,66 @@ async def inspect_ledger(run_id: str, source_id: str | None = None) -> str:
         repository.close()
 
 
+async def build_report_trace_inspection(
+    repository, run_id: UUID, report_statement_id: UUID
+) -> dict:
+    """Build a read-only complete-trace and diagnostic view for one statement."""
+    from polyresearch.provenance_graph import (
+        build_provenance_graph,
+        diagnose_incomplete_report_provenance,
+        trace_report_statements_to_discovery,
+    )
+
+    graph = await build_provenance_graph(repository, run_id)
+    statement_node = next(
+        (
+            node
+            for node in graph.nodes
+            if node.kind == "report_statement" and node.artifact_id == report_statement_id
+        ),
+        None,
+    )
+    if statement_node is None:
+        raise ValueError(f"Report statement {report_statement_id} does not exist in run {run_id}")
+    traces = trace_report_statements_to_discovery(graph)[report_statement_id]
+    diagnostics = diagnose_incomplete_report_provenance(graph)[report_statement_id]
+    return {
+        "run_id": str(run_id),
+        "report_statement": statement_node.attributes,
+        "traces": [trace.model_dump(mode="json") for trace in traces],
+        "diagnostics": [diagnostic.model_dump(mode="json") for diagnostic in diagnostics],
+        "complete": bool(traces) and not diagnostics,
+    }
+
+
+async def inspect_report_trace(run_id: str, report_statement_id: str) -> str:
+    """Open the configured SQLite ledger and render a statement trace as JSON."""
+    from polyresearch.repositories import SqliteEvidenceRepository
+
+    repository = SqliteEvidenceRepository(
+        os.environ.get("POLYRESEARCH_DB_PATH", "polyresearch.db")
+    )
+    try:
+        inspection = await build_report_trace_inspection(
+            repository, UUID(run_id), UUID(report_statement_id)
+        )
+        return json.dumps(inspection, ensure_ascii=False, indent=2)
+    finally:
+        repository.close()
+
+
 def main() -> None:
     """Run the CLI, displaying help when no research question is provided."""
     parser = build_parser()
     args = parser.parse_args()
+    if args.inspect_trace:
+        if not args.report_statement_id:
+            parser.error("--inspect-trace requires --report-statement-id")
+        try:
+            print(asyncio.run(inspect_report_trace(args.inspect_trace, args.report_statement_id)))
+        except (ValueError, LookupError) as error:
+            parser.error(str(error))
+        return
     if args.inspect_ledger:
         try:
             print(asyncio.run(inspect_ledger(args.inspect_ledger, args.source_id)))

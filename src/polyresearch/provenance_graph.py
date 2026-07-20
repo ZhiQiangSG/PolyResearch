@@ -12,6 +12,8 @@ from polyresearch.models import (
     ProvenanceGraph,
     ProvenanceGraphEdge,
     ProvenanceGraphNode,
+    ProvenanceDiagnostic,
+    ReportEvidenceTrace,
     ReportStatementEvidencePath,
 )
 from polyresearch.repositories.base import EvidenceRepository
@@ -76,6 +78,134 @@ def trace_report_statements_to_evidence(
                 )
         paths[node.artifact_id] = statement_paths
     return paths
+
+
+def trace_report_statements_to_discovery(
+    graph: ProvenanceGraph,
+) -> dict[UUID, list[ReportEvidenceTrace]]:
+    """Reverse-traverse rendered prose through claims, passages, sources, and queries."""
+    nodes_by_id = {node.node_id: node for node in graph.nodes}
+    incoming: dict[tuple[str, str], list[ProvenanceGraphEdge]] = {}
+    outgoing: dict[tuple[str, str], list[ProvenanceGraphEdge]] = {}
+    for edge in graph.edges:
+        incoming.setdefault((edge.kind, edge.to_node_id), []).append(edge)
+        outgoing.setdefault((edge.kind, edge.from_node_id), []).append(edge)
+
+    traces_by_statement: dict[UUID, list[ReportEvidenceTrace]] = {}
+    for statement_node in graph.nodes:
+        if statement_node.kind != "report_statement":
+            continue
+        traces: list[ReportEvidenceTrace] = []
+        for rendered_edge in incoming.get(("RENDERED_AS", statement_node.node_id), []):
+            claim_node = nodes_by_id.get(rendered_edge.from_node_id)
+            if claim_node is None:
+                continue
+            for assertion_edge in incoming.get(("ASSERTS", claim_node.node_id), []):
+                passage_node = nodes_by_id.get(assertion_edge.from_node_id)
+                if passage_node is None:
+                    continue
+                translation_nodes = [
+                    nodes_by_id[edge.to_node_id]
+                    for edge in outgoing.get(("TRANSLATED_AS", passage_node.node_id), [])
+                    if edge.to_node_id in nodes_by_id
+                ] or [None]
+                for contains_edge in incoming.get(("CONTAINS", passage_node.node_id), []):
+                    source_node = nodes_by_id.get(contains_edge.from_node_id)
+                    if source_node is None:
+                        continue
+                    for found_by_edge in incoming.get(("FOUND_BY", source_node.node_id), []):
+                        query_node = nodes_by_id.get(found_by_edge.from_node_id)
+                        if query_node is None:
+                            continue
+                        for translation_node in translation_nodes:
+                            traces.append(
+                                ReportEvidenceTrace(
+                                    report_statement_id=statement_node.artifact_id,
+                                    claim_id=claim_node.artifact_id,
+                                    evidence_passage_id=passage_node.artifact_id,
+                                    source_id=source_node.artifact_id,
+                                    query_id=query_node.artifact_id,
+                                    translation_id=(
+                                        translation_node.artifact_id if translation_node else None
+                                    ),
+                                )
+                            )
+        traces_by_statement[statement_node.artifact_id] = traces
+    return traces_by_statement
+
+
+def diagnose_incomplete_report_provenance(
+    graph: ProvenanceGraph,
+) -> dict[UUID, list[ProvenanceDiagnostic]]:
+    """Flag missing provenance links without inventing a substitute relationship."""
+    nodes_by_id = {node.node_id: node for node in graph.nodes}
+    incoming: dict[tuple[str, str], list[ProvenanceGraphEdge]] = {}
+    outgoing: dict[tuple[str, str], list[ProvenanceGraphEdge]] = {}
+    for edge in graph.edges:
+        incoming.setdefault((edge.kind, edge.to_node_id), []).append(edge)
+        outgoing.setdefault((edge.kind, edge.from_node_id), []).append(edge)
+    run_node = next((node for node in graph.nodes if node.kind == "research_run"), None)
+    output_language = (run_node.attributes.get("output_language") if run_node else None) or "en"
+
+    def translation_expected(passage_node: ProvenanceGraphNode) -> bool:
+        original_language = passage_node.attributes.get("original_language")
+        if not original_language:
+            return False
+        return original_language.casefold().split("-", 1)[0] != output_language.casefold().split("-", 1)[0]
+
+    diagnostics: dict[UUID, list[ProvenanceDiagnostic]] = {}
+    for statement_node in graph.nodes:
+        if statement_node.kind != "report_statement":
+            continue
+        statement_diagnostics: list[ProvenanceDiagnostic] = []
+        for rendered_edge in incoming.get(("RENDERED_AS", statement_node.node_id), []):
+            claim_node = nodes_by_id.get(rendered_edge.from_node_id)
+            if claim_node is None:
+                continue
+            for assertion_edge in incoming.get(("ASSERTS", claim_node.node_id), []):
+                passage_node = nodes_by_id.get(assertion_edge.from_node_id)
+                if passage_node is None:
+                    continue
+                contains_edges = incoming.get(("CONTAINS", passage_node.node_id), [])
+                if not contains_edges:
+                    statement_diagnostics.append(
+                        ProvenanceDiagnostic(
+                            code="missing_source",
+                            report_statement_id=statement_node.artifact_id,
+                            claim_id=claim_node.artifact_id,
+                            passage_id=passage_node.artifact_id,
+                            message="No persisted source → passage relationship exists.",
+                        )
+                    )
+                for contains_edge in contains_edges:
+                    source_node = nodes_by_id.get(contains_edge.from_node_id)
+                    if source_node is None:
+                        continue
+                    if not incoming.get(("FOUND_BY", source_node.node_id), []):
+                        statement_diagnostics.append(
+                            ProvenanceDiagnostic(
+                                code="missing_query",
+                                report_statement_id=statement_node.artifact_id,
+                                claim_id=claim_node.artifact_id,
+                                passage_id=passage_node.artifact_id,
+                                source_id=source_node.artifact_id,
+                                message="No persisted discovery query → source relationship exists.",
+                            )
+                        )
+                if translation_expected(passage_node) and not outgoing.get(
+                    ("TRANSLATED_AS", passage_node.node_id), []
+                ):
+                    statement_diagnostics.append(
+                        ProvenanceDiagnostic(
+                            code="missing_expected_translation",
+                            report_statement_id=statement_node.artifact_id,
+                            claim_id=claim_node.artifact_id,
+                            passage_id=passage_node.artifact_id,
+                            message="Output language differs from evidence language but no translation is linked.",
+                        )
+                    )
+        diagnostics[statement_node.artifact_id] = statement_diagnostics
+    return diagnostics
 
 
 async def build_provenance_graph(

@@ -31,6 +31,7 @@ from polyresearch.repositories.base import (
     ArtifactConflictError,
     EvidenceRepository,
     RepositoryNotFoundError,
+    ReportProvenanceError,
 )
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -334,9 +335,56 @@ class SqliteEvidenceRepository(EvidenceRepository):
     def _append_report_statements(self, run_id: UUID, statements: Sequence[ReportStatement]) -> None:
         with self._transaction():
             for statement in statements:
-                for claim_id in statement.claim_ids:
-                    self._ensure_artifact("claims", run_id, claim_id)
+                self._ensure_complete_report_trace(run_id, statement)
             self._append("report_statements", run_id, statements)
+
+    def _ensure_complete_report_trace(self, run_id: UUID, statement: ReportStatement) -> None:
+        """Reject report prose that cannot reach discovered original evidence.
+
+        Translation records are linked derivatives, so they do not determine
+        persistence eligibility. Translation needs remain visible to provenance
+        diagnostics when the output language differs from original evidence.
+        """
+        query_rows = self._connection.execute(
+            "SELECT payload FROM query_records WHERE run_id = ?", (str(run_id),)
+        ).fetchall()
+        query_urls = {
+            query.result_url
+            for query_row in query_rows
+            if (query := QueryRecord.model_validate_json(query_row["payload"])).result_url
+        }
+        for claim_id in statement.claim_ids:
+            claim_row = self._connection.execute(
+                "SELECT payload FROM claims WHERE id = ? AND run_id = ?",
+                (str(claim_id), str(run_id)),
+            ).fetchone()
+            if claim_row is None:
+                raise RepositoryNotFoundError(
+                    f"claims artifact {claim_id} does not exist in run {run_id}"
+                )
+            claim = Claim.model_validate_json(claim_row["payload"])
+            for passage_id in claim.evidence_passage_ids:
+                passage_row = self._connection.execute(
+                    "SELECT payload FROM passages WHERE id = ? AND run_id = ?",
+                    (str(passage_id), str(run_id)),
+                ).fetchone()
+                if passage_row is None:
+                    continue
+                passage = EvidencePassage.model_validate_json(passage_row["payload"])
+                source_row = self._connection.execute(
+                    "SELECT payload FROM sources WHERE id = ? AND run_id = ?",
+                    (str(passage.source_id), str(run_id)),
+                ).fetchone()
+                if source_row is None:
+                    continue
+                source = SourceRecord.model_validate_json(source_row["payload"])
+                if {source.canonical_url, source.discovered_url} & query_urls:
+                    return
+        raise ReportProvenanceError(
+            "Report statement "
+            f"{statement.id} lacks a complete statement → claim → original passage "
+            "→ source → query trace."
+        )
 
     async def append_report_bundles(self, run_id: UUID, bundles: Sequence[ReportBundle]) -> None:
         await self._execute(self._append_report_bundles, run_id, bundles)

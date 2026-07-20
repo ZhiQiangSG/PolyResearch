@@ -99,6 +99,7 @@ class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     query="policy update",
                     language="en",
                     provider="tavily",
+                    result_url="https://example.test/policy",
                 )
                 attachment = ProvenanceAttachment(
                     run_id=run.id,

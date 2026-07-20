@@ -29,6 +29,10 @@ class ArtifactConflictError(ValueError):
     """Raised when an immutable artifact ID is reused with different content."""
 
 
+class ReportProvenanceError(ValueError):
+    """Raised when rendered report prose lacks a complete evidence-discovery path."""
+
+
 class EvidenceRepository(ABC):
     """Abstract storage interface for a run's typed evidence artifacts.
 
@@ -108,7 +112,7 @@ class EvidenceRepository(ABC):
     async def append_report_statements(
         self, run_id: UUID, statements: Sequence[ReportStatement]
     ) -> None:
-        """Persist auditable rendered report statements for a run."""
+        """Persist statements only when each has a claim→passage→source→query trace."""
 
     @abstractmethod
     async def append_report_bundles(

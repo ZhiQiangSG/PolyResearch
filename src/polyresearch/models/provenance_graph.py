@@ -57,6 +57,28 @@ class ReportStatementEvidencePath(BaseModel):
     passage_id: UUID
 
 
+class ReportEvidenceTrace(BaseModel):
+    """One complete auditable path from rendered report text back to discovery."""
+
+    report_statement_id: UUID
+    claim_id: UUID
+    evidence_passage_id: UUID
+    source_id: UUID
+    query_id: UUID
+    translation_id: UUID | None = None
+
+
+class ProvenanceDiagnostic(BaseModel):
+    """An explicit gap found while tracing a rendered statement to evidence."""
+
+    code: Literal["missing_source", "missing_query", "missing_expected_translation"]
+    report_statement_id: UUID
+    claim_id: UUID
+    passage_id: UUID
+    source_id: UUID | None = None
+    message: str
+
+
 class ProvenanceGraph(BaseModel):
     """A SQLite-compatible graph-shaped view over durable run artifacts."""
 
