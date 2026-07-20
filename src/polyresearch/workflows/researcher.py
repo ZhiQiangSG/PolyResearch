@@ -15,8 +15,9 @@ from polyresearch.evidence.claim_clustering import cluster_claims
 from polyresearch.configuration import Configuration
 from polyresearch.evidence.entity_resolution import resolve_claim_entities
 from polyresearch.evidence.verification_confidence import verification_confidence
+from polyresearch.evidence.verification_results import latest_results_by_claim_id
 from polyresearch.models import (
-    Claim, ClaimExtractionDraft, ClaimExtractionResult, ClaimClusterVerificationResult,
+    Claim, ClaimExtractionResult, ClaimClusterVerificationResult,
     EvidenceLink, EvidencePassage, ResearcherOutputState, ResearcherState,
     ResearchPlan, SourceRecord, TranslationDraft, TranslationRecord, VerificationResult,
     VerificationStatus,
@@ -435,7 +436,7 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
     )
     translations = await context.repository.list_translations(context.run_id)
     output_language = config.get("configurable", {}).get("output_language", "en")
-    latest_results_by_claim_id = _latest_results_by_claim_id(existing_results)
+    latest_results_by_claim = latest_results_by_claim_id(existing_results)
     requested_cluster_ids = {
         UUID(str(cluster_id))
         for cluster_id in state.get("claim_cluster_ids_to_reverify", [])
@@ -443,7 +444,7 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
     claims_to_verify = [
         claim
         for claim in claims
-        if claim.id not in latest_results_by_claim_id
+        if claim.id not in latest_results_by_claim
         or (claim.claim_cluster_id or claim.id) in requested_cluster_ids
     ]
     if not claims_to_verify:
@@ -470,15 +471,15 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
     results: list[VerificationResult] = []
     verification_links: list[EvidenceLink] = []
     verifiable_clusters = {
-        cluster_id: cluster_claims
-        for cluster_id, cluster_claims in clusters.items()
+        cluster_id: claims_in_cluster
+        for cluster_id, claims_in_cluster in clusters.items()
         if any(
             links_by_claim_id.get(claim.id)
             and all(link.passage_id in passages_by_id for link in links_by_claim_id[claim.id])
-            for claim in cluster_claims
+            for claim in claims_in_cluster
         )
     }
-    for cluster_id, cluster_claims in clusters.items():
+    for cluster_id, claims_in_cluster in clusters.items():
         if cluster_id in verifiable_clusters:
             continue
         results.extend(
@@ -487,19 +488,21 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                 status=VerificationStatus.INSUFFICIENT_EVIDENCE,
                 confidence=0.0,
                 rationale="No persisted claim-to-passage evidence is available for this claim cluster.",
-                attempt_number=_next_attempt_number(claim.id, latest_results_by_claim_id),
+                attempt_number=_next_attempt_number(claim.id, latest_results_by_claim),
                 supersedes_verification_result_id=_superseded_result_id(
-                    claim.id, latest_results_by_claim_id
+                    claim.id, latest_results_by_claim
                 ),
                 trigger=_verification_trigger(claim, requested_cluster_ids),
                 verifier_model_id=verifier_model_id,
                 verifier_prompt_version=CLAIM_CLUSTER_VERIFICATION_PROMPT_VERSION,
             )
-            for claim in cluster_claims
+            for claim in claims_in_cluster
         )
     if verifiable_clusters:
         verifiable_claim_ids = {
-            claim.id for cluster_claims in verifiable_clusters.values() for claim in cluster_claims
+            claim.id
+            for claims_in_cluster in verifiable_clusters.values()
+            for claim in claims_in_cluster
         }
         relevant_passage_ids = {
             link.passage_id
@@ -515,17 +518,17 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                 "clusters": [
                     {
                         "cluster_id": str(cluster_id),
-                        "claims": _serialize_artifacts(cluster_claims, Claim),
+                        "claims": _serialize_artifacts(claims_in_cluster, Claim),
                         "evidence_links": _serialize_artifacts(
                             [
                                 link
-                                for claim in cluster_claims
+                                for claim in claims_in_cluster
                                 for link in links_by_claim_id.get(claim.id, [])
                             ],
                             EvidenceLink,
                         ),
                     }
-                    for cluster_id, cluster_claims in verifiable_clusters.items()
+                    for cluster_id, claims_in_cluster in verifiable_clusters.items()
                 ],
                 "passages": _serialize_artifacts(relevant_passages, EvidencePassage),
                 "sources": _serialize_artifacts(
@@ -571,7 +574,7 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                 exc_info=redacted_exception_info(error),
             )
             drafts_by_cluster_id = {}
-        for cluster_id, cluster_claims in verifiable_clusters.items():
+        for cluster_id, claims_in_cluster in verifiable_clusters.items():
             draft = drafts_by_cluster_id.get(cluster_id)
             if draft is None:
                 results.extend(
@@ -581,21 +584,21 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                         confidence=0.0,
                         rationale="Verification did not return a valid result for this claim cluster.",
                         evidence_link_ids=[link.id for link in links_by_claim_id.get(claim.id, [])],
-                        attempt_number=_next_attempt_number(claim.id, latest_results_by_claim_id),
+                        attempt_number=_next_attempt_number(claim.id, latest_results_by_claim),
                         supersedes_verification_result_id=_superseded_result_id(
-                            claim.id, latest_results_by_claim_id
+                            claim.id, latest_results_by_claim
                         ),
                         trigger=_verification_trigger(claim, requested_cluster_ids),
                         verifier_model_id=verifier_model_id,
                         verifier_prompt_version=CLAIM_CLUSTER_VERIFICATION_PROMPT_VERSION,
                     )
-                    for claim in cluster_claims
+                    for claim in claims_in_cluster
                 )
                 continue
             assessments_by_claim_id = {
                 assessment.claim_id: assessment for assessment in draft.claim_assessments
             }
-            for claim in cluster_claims:
+            for claim in claims_in_cluster:
                 assessment = assessments_by_claim_id[claim.id]
                 outcome_links = _verification_outcome_links(
                     claim=claim,
@@ -611,7 +614,7 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                     translations=translations,
                     output_language=output_language,
                     disagreement_assessments=draft.disagreement_assessments,
-                    previous_result=latest_results_by_claim_id.get(claim.id),
+                    previous_result=latest_results_by_claim.get(claim.id),
                     trigger=_verification_trigger(claim, requested_cluster_ids),
                     verifier_model_id=verifier_model_id,
                     verifier_prompt_version=CLAIM_CLUSTER_VERIFICATION_PROMPT_VERSION,
@@ -681,14 +684,14 @@ def _verification_result_with_confidence(
 
 def _has_complete_evidence_assessments(
     draft,
-    cluster_claims: list[Claim],
+    claims_in_cluster: list[Claim],
     links_by_claim_id: dict[UUID, list[EvidenceLink]],
 ) -> bool:
     """Reject partial verifier link mappings while accepting legacy empty outputs."""
     assessments_by_claim_id = {
         assessment.claim_id: assessment for assessment in draft.claim_assessments
     }
-    for claim in cluster_claims:
+    for claim in claims_in_cluster:
         evidence_assessments = assessments_by_claim_id[claim.id].evidence_assessments
         if not evidence_assessments:
             continue
@@ -736,22 +739,6 @@ def _verification_outcome_links(
         )
         for input_link in input_links
     ]
-def _latest_results_by_claim_id(
-    results: list[VerificationResult],
-) -> dict[UUID, VerificationResult]:
-    """Select the newest immutable verification attempt for each claim."""
-    latest: dict[UUID, VerificationResult] = {}
-    for result in results:
-        current = latest.get(result.claim_id)
-        if current is None or (result.attempt_number, result.created_at, str(result.id)) > (
-            current.attempt_number,
-            current.created_at,
-            str(current.id),
-        ):
-            latest[result.claim_id] = result
-    return latest
-
-
 def _next_attempt_number(
     claim_id: UUID, latest_results: dict[UUID, VerificationResult]
 ) -> int:
@@ -781,7 +768,7 @@ async def resolve_conflicts(state: ResearcherState, config: RunnableConfig):
     if state.get("conflict_resolution_attempted", False):
         return Command(goto="__end__")
     context, _, _, claims, _, results = await _load_evidence_ledger(config)
-    latest_results = _latest_results_by_claim_id(results)
+    latest_results = latest_results_by_claim_id(results)
     has_material_conflict = any(
         result.status is VerificationStatus.CONTRADICTED
         or any(

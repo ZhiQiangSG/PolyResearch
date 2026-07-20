@@ -3,7 +3,13 @@
 import os
 from unittest.mock import patch
 
-from polyresearch.configuration import Configuration
+from polyresearch.configuration import BailianWebSearchConfig, Configuration
+
+
+def test_configuration_omits_inert_provider_and_bailian_language_fields() -> None:
+    assert "model_provider" not in Configuration.model_fields
+    assert "locale" not in BailianWebSearchConfig.model_fields
+    assert "query_language" not in BailianWebSearchConfig.model_fields
 
 
 def test_dashscope_key_enables_default_bailian_configuration() -> None:

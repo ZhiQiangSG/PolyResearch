@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TypeVar
 from uuid import UUID
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -34,6 +35,7 @@ from polyresearch.repositories.base import (
     EvidenceRepository,
     ReportProvenanceError,
     RepositoryNotFoundError,
+    DiscoveryBudgetReservation,
 )
 from polyresearch.security import redacted_exception_info
 
@@ -50,7 +52,7 @@ class SqliteEvidenceRepository(EvidenceRepository):
     Pydantic artifacts and their stable IDs for later graph traversal.
     """
 
-    _MIGRATION_VERSION = 3
+    _MIGRATION_VERSION = 4
     _ARTIFACT_TABLES = (
         "research_plans",
         "query_records",
@@ -120,6 +122,28 @@ class SqliteEvidenceRepository(EvidenceRepository):
             if not traces_applied:
                 self._create_artifact_table("trace_records")
                 self._connection.execute("INSERT INTO schema_migrations(version) VALUES (3)")
+
+            reservations_applied = self._connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = 4"
+            ).fetchone()
+            if not reservations_applied:
+                self._connection.execute(
+                    """
+                    CREATE TABLE discovery_budget_reservations (
+                        id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        query_slots INTEGER NOT NULL,
+                        source_slots INTEGER NOT NULL,
+                        finalized INTEGER NOT NULL DEFAULT 0,
+                        FOREIGN KEY(run_id) REFERENCES research_runs(id)
+                    )
+                    """
+                )
+                self._connection.execute(
+                    "CREATE INDEX idx_discovery_budget_reservations_run_id "
+                    "ON discovery_budget_reservations(run_id)"
+                )
+                self._connection.execute("INSERT INTO schema_migrations(version) VALUES (4)")
 
     def _create_artifact_table(self, table: str) -> None:
         self._connection.execute(
@@ -259,6 +283,64 @@ class SqliteEvidenceRepository(EvidenceRepository):
     def _append_query_records(self, run_id: UUID, queries: Sequence[QueryRecord]) -> None:
         with self._transaction():
             self._append("query_records", run_id, queries)
+
+    async def reserve_discovery_budget(
+        self, run_id: UUID, *, max_queries: int, max_sources: int, requested_sources: int
+    ) -> DiscoveryBudgetReservation:
+        return await self._execute(
+            self._reserve_discovery_budget, run_id, max_queries, max_sources, requested_sources
+        )
+
+    def _reserve_discovery_budget(
+        self, run_id: UUID, max_queries: int, max_sources: int, requested_sources: int
+    ) -> DiscoveryBudgetReservation:
+        if requested_sources < 1:
+            raise ValueError("requested_sources must be positive")
+        with self._transaction():
+            self._ensure_run(run_id)
+            reserved_queries = self._connection.execute(
+                "SELECT COALESCE(SUM(query_slots), 0) FROM discovery_budget_reservations WHERE run_id = ?",
+                (str(run_id),),
+            ).fetchone()[0]
+            if reserved_queries >= max_queries:
+                raise ValueError("Query budget exhausted for this research run.")
+            source_count = self._connection.execute(
+                "SELECT COUNT(*) FROM sources WHERE run_id = ?", (str(run_id),)
+            ).fetchone()[0]
+            pending_sources = self._connection.execute(
+                "SELECT COALESCE(SUM(source_slots), 0) FROM discovery_budget_reservations "
+                "WHERE run_id = ? AND finalized = 0",
+                (str(run_id),),
+            ).fetchone()[0]
+            source_slots = min(requested_sources, max_sources - source_count - pending_sources)
+            if source_slots < 1:
+                raise ValueError("Source-fetch budget exhausted for this research run.")
+            reservation = DiscoveryBudgetReservation(uuid4(), run_id, source_slots)
+            self._connection.execute(
+                "INSERT INTO discovery_budget_reservations(id, run_id, query_slots, source_slots) "
+                "VALUES (?, ?, 1, ?)",
+                (str(reservation.id), str(run_id), source_slots),
+            )
+            return reservation
+
+    async def finalize_discovery_budget(
+        self, reservation: DiscoveryBudgetReservation, *, sources_used: int
+    ) -> None:
+        await self._execute(self._finalize_discovery_budget, reservation, sources_used)
+
+    def _finalize_discovery_budget(
+        self, reservation: DiscoveryBudgetReservation, sources_used: int
+    ) -> None:
+        if not 0 <= sources_used <= reservation.source_slots:
+            raise ValueError("sources_used must fit the reserved source capacity")
+        with self._transaction():
+            cursor = self._connection.execute(
+                "UPDATE discovery_budget_reservations SET source_slots = ?, finalized = 1 "
+                "WHERE id = ? AND run_id = ? AND finalized = 0",
+                (sources_used, str(reservation.id), str(reservation.run_id)),
+            )
+            if cursor.rowcount != 1:
+                raise RepositoryNotFoundError(f"Discovery budget reservation {reservation.id} is unavailable")
 
     async def append_provenance_attachments(
         self, run_id: UUID, attachments: Sequence[ProvenanceAttachment]

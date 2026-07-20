@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from polyresearch.evidence.provenance_graph import build_provenance_graph
+from polyresearch.evidence.verification_results import latest_results_by_claim_id
 from polyresearch.models import (
     Claim,
     ClaimClusterVerificationResult,
@@ -22,6 +23,26 @@ from polyresearch.workflows.report_generator import _build_unresolved_disagreeme
 
 
 researcher_module = importlib.import_module("polyresearch.workflows.researcher")
+
+
+def test_latest_verification_selection_uses_newest_attempt() -> None:
+    claim_id = uuid4()
+    first = VerificationResult(
+        claim_id=claim_id,
+        status=VerificationStatus.CONTRADICTED,
+        confidence=0.3,
+        rationale="Earlier attempt.",
+        attempt_number=1,
+    )
+    latest = VerificationResult(
+        claim_id=claim_id,
+        status=VerificationStatus.SUPPORTED,
+        confidence=0.9,
+        rationale="Later attempt.",
+        attempt_number=2,
+    )
+
+    assert latest_results_by_claim_id([latest, first]) == {claim_id: latest}
 
 
 class _SecondAttemptVerifier:

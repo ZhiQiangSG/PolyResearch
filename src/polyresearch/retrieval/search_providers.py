@@ -7,7 +7,8 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from threading import Lock
 from time import perf_counter
 from urllib.parse import urljoin
 
@@ -29,6 +30,15 @@ from polyresearch.security import redacted_exception_info, redact_secrets
 
 logger = logging.getLogger(__name__)
 
+_GENERIC_DISCOVERY_OBSERVATION = (
+    "Discovery did not return usable evidence. Try another planned query or source type."
+)
+
+
+def _sanitized_failure(error: BaseException) -> str:
+    """Retain useful diagnostics without exposing credentials to durable artifacts."""
+    return f"{type(error).__name__}: {redact_secrets(str(error))}"
+
 
 @dataclass
 class _BailianRateLimiter:
@@ -36,9 +46,12 @@ class _BailianRateLimiter:
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     next_allowed_at: float = 0.0
+    last_used_at: float = 0.0
 
 
 _BAILIAN_RATE_LIMITERS: dict[str, _BailianRateLimiter] = {}
+_BAILIAN_LIMITER_REGISTRY_LOCK = Lock()
+_BAILIAN_LIMITER_IDLE_TTL_SECONDS = 60 * 60
 
 
 def _bailian_limiter_key(bailian) -> str:
@@ -62,19 +75,39 @@ async def _reserve_bailian_request_slot(
     sleep: Callable[[float], Awaitable[object]] | None = None,
 ) -> None:
     """Reserve one request slot without holding the lock during network I/O."""
-    limiter = _BAILIAN_RATE_LIMITERS.get(provider_key)
-    if limiter is None:
-        limiter = _BailianRateLimiter()
-        _BAILIAN_RATE_LIMITERS[provider_key] = limiter
     monotonic = clock or asyncio.get_running_loop().time
     sleeper = sleep or asyncio.sleep
+    limiter = _get_bailian_rate_limiter(provider_key, monotonic())
     async with limiter.lock:
         wait_seconds = limiter.next_allowed_at - monotonic()
         if wait_seconds > 0:
             await sleeper(wait_seconds)
         # Record the actual reservation time after any scheduler delay, so later
         # callers cannot obtain the same slot.
-        limiter.next_allowed_at = monotonic() + minimum_interval
+        reserved_at = monotonic()
+        limiter.next_allowed_at = reserved_at + minimum_interval
+        limiter.last_used_at = reserved_at
+
+
+def _get_bailian_rate_limiter(provider_key: str, now: float) -> _BailianRateLimiter:
+    """Get a limiter while pruning idle provider accounts from long-lived workers."""
+    with _BAILIAN_LIMITER_REGISTRY_LOCK:
+        stale_keys = [
+            key
+            for key, limiter in _BAILIAN_RATE_LIMITERS.items()
+            if not limiter.lock.locked()
+            and now - limiter.last_used_at >= _BAILIAN_LIMITER_IDLE_TTL_SECONDS
+            and now >= limiter.next_allowed_at
+        ]
+        for key in stale_keys:
+            del _BAILIAN_RATE_LIMITERS[key]
+        limiter = _BAILIAN_RATE_LIMITERS.get(provider_key)
+        if limiter is None:
+            limiter = _BailianRateLimiter(last_used_at=now)
+            _BAILIAN_RATE_LIMITERS[provider_key] = limiter
+        else:
+            limiter.last_used_at = now
+        return limiter
 
 
 @dataclass(frozen=True)
@@ -88,6 +121,7 @@ class SearchRequest:
     date_from: str | None = None
     date_to: str | None = None
     rationale: str | None = None
+    source_budget: int = 5
 
 
 class TavilySearchProvider:
@@ -107,6 +141,7 @@ class TavilySearchProvider:
 
         return await tavily_search.coroutine(
             [request.query],
+            max_results=request.source_budget,
             query_language=request.language,
             locale=request.locale,
             start_date=request.date_from,
@@ -262,7 +297,7 @@ async def _persist_bailian_ingestion(
     passages: list[EvidencePassage] = []
     query_records: list[QueryRecord] = []
     seen_urls: set[str] = set()
-    for result_rank, row in enumerate(_bailian_result_rows(raw_result), start=1):
+    for result_rank, row in enumerate(_bailian_result_rows(raw_result)[:request.source_budget], start=1):
         discovered_url = row.get("url") or row.get("link") or row.get("source_url")
         if not isinstance(discovered_url, str):
             continue
@@ -447,7 +482,7 @@ class SearchProviderRouter:
             await _persist_bailian_query_record(
                 request,
                 config,
-                failure=str(error),
+                failure=_sanitized_failure(error),
             )
             return await TavilySearchProvider().search(
                 request,
@@ -481,12 +516,6 @@ async def planned_web_search(
         raise ToolException("Discovery requires runtime configuration.")
     context = RunContext.from_runnable_config(config)
     configurable = Configuration.from_runnable_config(config)
-    existing_queries = await context.repository.list_query_records(context.run_id)
-    if len(existing_queries) >= configurable.max_queries_per_run:
-        raise ToolException("Query budget exhausted for this research run.")
-    existing_sources = await context.repository.list_sources(context.run_id)
-    if len(existing_sources) >= configurable.max_source_fetches_per_run:
-        raise ToolException("Source-fetch budget exhausted for this research run.")
     request = SearchRequest(
         query=query,
         language=language,
@@ -499,6 +528,28 @@ async def planned_web_search(
     plan = _research_plan_from_config(config)
     router = SearchProviderRouter()
     provider = router.route(request, plan)
+    try:
+        reservation = await context.repository.reserve_discovery_budget(
+            context.run_id,
+            max_queries=configurable.max_queries_per_run,
+            max_sources=configurable.max_source_fetches_per_run,
+            requested_sources=5,
+        )
+    except ValueError as error:
+        logger.warning(
+            "Discovery budget reservation failed",
+            extra={
+                "operation": "reserve_discovery_budget",
+                "provider": provider.name,
+                "query_language": language,
+                "target_source_type": target_source_type,
+                "run_id": str(context.run_id),
+                "failure": _sanitized_failure(error),
+            },
+            exc_info=redacted_exception_info(error),
+        )
+        raise ToolException(_GENERIC_DISCOVERY_OBSERVATION) from None
+    request = replace(request, source_budget=reservation.source_slots)
     started_at = datetime.now(timezone.utc)
     started = perf_counter()
     try:
@@ -506,7 +557,7 @@ async def planned_web_search(
         failure = None
     except Exception as error:
         result = None
-        failure = str(error)
+        failure = _sanitized_failure(error)
         logger.warning(
             "Provider-routed discovery failed",
             extra={
@@ -518,6 +569,19 @@ async def planned_web_search(
             },
             exc_info=redacted_exception_info(error),
         )
+    try:
+        sources_used = len(json.loads(result).get("sources", [])) if result else 0
+        await context.repository.finalize_discovery_budget(
+            reservation, sources_used=sources_used
+        )
+    except Exception as error:
+        logger.warning(
+            "Discovery budget finalization failed",
+            extra={"operation": "finalize_discovery_budget", "run_id": str(context.run_id)},
+            exc_info=redacted_exception_info(error),
+        )
+        if failure is None:
+            failure = _sanitized_failure(error)
     try:
         context = RunContext.from_runnable_config(config)
         records = await context.repository.list_query_records(context.run_id)
@@ -545,5 +609,5 @@ async def planned_web_search(
         )
         pass
     if failure is not None:
-        raise ToolException(failure)
+        raise ToolException(_GENERIC_DISCOVERY_OBSERVATION)
     return result

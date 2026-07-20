@@ -4,16 +4,14 @@ from uuid import uuid4
 from polyresearch.models import (
     Claim,
     EvidencePassage,
-    EvidenceLink,
-    QueryRecord,
     ReportDraft,
     ReportStatementDraft,
     ReportStatement,
     SourceRecord,
     VerificationStatus,
 )
-from polyresearch import graph as graph_module
 from polyresearch.evidence.report_qa import validate_report_statements
+from polyresearch.workflows.report_generator import _build_report_statements
 
 
 class ReportQaTests(unittest.TestCase):
@@ -75,7 +73,7 @@ class ReportQaTests(unittest.TestCase):
         self.assertEqual(issues[0].severity, "warning")
 
     def test_unknown_claim_draft_remains_visible_to_qa(self) -> None:
-        statement = graph_module._build_report_statements(
+        statement = _build_report_statements(
             run_id=self.run_id,
             report_draft=ReportDraft(
                 statements=[
@@ -102,7 +100,7 @@ class ReportQaTests(unittest.TestCase):
         )
 
     def test_creates_a_statement_for_each_sentence_or_displayable_clause(self) -> None:
-        statements = graph_module._build_report_statements(
+        statements = _build_report_statements(
             run_id=self.run_id,
             report_draft=ReportDraft(
                 statements=[

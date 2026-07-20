@@ -1,6 +1,7 @@
 """Persistence boundary for PolyResearch's typed evidence ledger."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Sequence
 from uuid import UUID
 
@@ -34,6 +35,15 @@ class ReportProvenanceError(ValueError):
     """Raised when rendered report prose lacks a complete evidence-discovery path."""
 
 
+@dataclass(frozen=True)
+class DiscoveryBudgetReservation:
+    """Durable capacity reserved before a provider request starts."""
+
+    id: UUID
+    run_id: UUID
+    source_slots: int
+
+
 class EvidenceRepository(ABC):
     """Abstract storage interface for a run's typed evidence artifacts.
 
@@ -62,6 +72,18 @@ class EvidenceRepository(ABC):
         self, run_id: UUID, queries: Sequence[QueryRecord]
     ) -> None:
         """Persist provider-routing and discovery-query provenance."""
+
+    @abstractmethod
+    async def reserve_discovery_budget(
+        self, run_id: UUID, *, max_queries: int, max_sources: int, requested_sources: int
+    ) -> DiscoveryBudgetReservation:
+        """Atomically reserve one query and bounded source capacity for discovery."""
+
+    @abstractmethod
+    async def finalize_discovery_budget(
+        self, reservation: DiscoveryBudgetReservation, *, sources_used: int
+    ) -> None:
+        """Release unused source capacity after a provider attempt completes."""
 
     @abstractmethod
     async def append_provenance_attachments(

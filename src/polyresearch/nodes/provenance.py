@@ -8,9 +8,7 @@ from langchain_core.runnables import RunnableConfig
 
 from polyresearch.models import (
     Claim,
-    EvidencePassage,
     ProvenanceAttachment,
-    SourceRecord,
 )
 from polyresearch.repositories import RunContext
 from polyresearch.security import redact_secrets

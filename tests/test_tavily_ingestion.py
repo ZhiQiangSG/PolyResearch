@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import tempfile
 import unittest
@@ -7,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
+
+from langchain_core.tools import ToolException
 
 from polyresearch.models import (
     AtomicSubquestion,
@@ -76,6 +79,53 @@ def _routing_plan() -> ResearchPlan:
 
 
 class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_failure_returns_generic_observation_and_redacts_diagnostics(self) -> None:
+        secret = "provider-authorization-secret"
+
+        async def failing_search(*args, **kwargs):
+            raise RuntimeError(f"Authorization: Bearer {secret}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
+            plan = _routing_plan().model_copy(update={"run_id": run.id})
+            try:
+                await repository.create_run(run)
+                with (
+                    patch.object(TavilySearchProvider, "search", new=failing_search),
+                    self.assertLogs(
+                        "polyresearch.retrieval.search_providers", logging.WARNING
+                    ) as logs,
+                    self.assertRaises(ToolException) as raised,
+                ):
+                    await planned_web_search.coroutine(
+                        "policy",
+                        "en",
+                        "news",
+                        config={
+                            "configurable": {
+                                "run_id": str(run.id),
+                                "evidence_repository": repository,
+                                "research_plan": plan,
+                            }
+                        },
+                    )
+
+                self.assertEqual(
+                    str(raised.exception),
+                    "Discovery did not return usable evidence. "
+                    "Try another planned query or source type.",
+                )
+                diagnostics = "\n".join(logs.output)
+                self.assertNotIn(secret, diagnostics)
+                self.assertIn("[REDACTED_SECRET]", diagnostics)
+                traces = await repository.list_trace_records(run.id)
+                self.assertEqual(len(traces), 1)
+                self.assertNotIn(secret, traces[0].provider_failure or "")
+                self.assertIn("[REDACTED_SECRET]", traces[0].provider_failure or "")
+            finally:
+                repository.close()
+
     async def test_chinese_route_uses_environment_activated_bailian_before_tavily(self) -> None:
         calls: list[str] = []
 
@@ -202,6 +252,32 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
             search_providers._persist_bailian_ingestion = original_persist
             search_providers._reserve_bailian_request_slot = original_reserve
             search_providers._BAILIAN_RATE_LIMITERS.pop(provider_key, None)
+
+    async def test_bailian_limiter_evicts_idle_provider_accounts(self) -> None:
+        class _Clock:
+            now = 0.0
+
+        clock = _Clock()
+
+        async def fake_sleep(interval: float) -> None:
+            clock.now += interval
+
+        search_providers._BAILIAN_RATE_LIMITERS.clear()
+        original_ttl = search_providers._BAILIAN_LIMITER_IDLE_TTL_SECONDS
+        search_providers._BAILIAN_LIMITER_IDLE_TTL_SECONDS = 10
+        try:
+            await search_providers._reserve_bailian_request_slot(
+                "idle-account", 1, clock=lambda: clock.now, sleep=fake_sleep
+            )
+            clock.now = 11
+            await search_providers._reserve_bailian_request_slot(
+                "active-account", 1, clock=lambda: clock.now, sleep=fake_sleep
+            )
+
+            self.assertEqual(set(search_providers._BAILIAN_RATE_LIMITERS), {"active-account"})
+        finally:
+            search_providers._BAILIAN_LIMITER_IDLE_TTL_SECONDS = original_ttl
+            search_providers._BAILIAN_RATE_LIMITERS.clear()
 
     def test_bailian_configuration_rejects_non_allowlisted_tools(self) -> None:
         with self.assertRaises(ValueError):

@@ -163,9 +163,14 @@ class SqliteMigrationTests(unittest.TestCase):
                 trace_table = repository._connection.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trace_records'"
                 ).fetchone()
+                reservation_table = repository._connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'discovery_budget_reservations'"
+                ).fetchone()
 
-                self.assertEqual([row["version"] for row in migrations], [1, 2, 3])
+                self.assertEqual([row["version"] for row in migrations], [1, 2, 3, 4])
                 self.assertIsNotNone(attachment_table)
                 self.assertIsNotNone(trace_table)
+                self.assertIsNotNone(reservation_table)
             finally:
                 repository.close()

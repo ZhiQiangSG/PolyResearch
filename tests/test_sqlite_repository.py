@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import threading
 import unittest
@@ -27,6 +28,35 @@ from polyresearch.repositories import SqliteEvidenceRepository
 
 
 class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_discovery_budget_reservation_is_atomic_and_releases_unused_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(question="What changed?", output_language="en")
+            try:
+                await repository.create_run(run)
+                outcomes = await asyncio.gather(
+                    *(
+                        repository.reserve_discovery_budget(
+                            run.id, max_queries=3, max_sources=2, requested_sources=2
+                        )
+                        for _ in range(2)
+                    ),
+                    return_exceptions=True,
+                )
+                reservations = [item for item in outcomes if not isinstance(item, Exception)]
+                self.assertEqual(len(reservations), 1)
+                self.assertIsInstance(
+                    next(item for item in outcomes if isinstance(item, Exception)), ValueError
+                )
+                await repository.finalize_discovery_budget(reservations[0], sources_used=0)
+
+                released = await repository.reserve_discovery_budget(
+                    run.id, max_queries=3, max_sources=2, requested_sources=2
+                )
+                self.assertEqual(released.source_slots, 2)
+            finally:
+                repository.close()
+
     async def test_repository_io_runs_off_the_event_loop_thread(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")

@@ -27,6 +27,7 @@ from polyresearch.nodes.provenance import (
 )
 from polyresearch.prompts import report_outline_generation_prompt, report_prose_generation_prompt
 from polyresearch.evidence.report_qa import validate_report_statements
+from polyresearch.evidence.verification_results import latest_results_by_claim_id
 from polyresearch.runtime.model_utils import create_qwen_chat_model, get_model_token_limit, is_token_limit_exceeded
 from polyresearch.security import redacted_exception_info
 
@@ -249,7 +250,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 exc_info=redacted_exception_info(e),
             )
             # Handle token limit exceeded errors with progressive truncation
-            if is_token_limit_exceeded(e, configurable.final_report_model):
+            if is_token_limit_exceeded(e):
                 current_retry += 1
                 
                 if current_retry == 1:
@@ -369,7 +370,7 @@ def _build_report_statements(
     claims_by_id = {claim.id: claim for claim in claims}
     statuses_by_claim_id = {
         claim_id: result.status
-        for claim_id, result in _latest_results_by_claim_id(verification_results).items()
+        for claim_id, result in latest_results_by_claim_id(verification_results).items()
     }
     statements: list[ReportStatement] = []
     for draft in report_draft.statements:
@@ -421,7 +422,7 @@ def _build_unresolved_disagreements(
     claims_by_cluster: dict[UUID, list[Claim]] = defaultdict(list)
     for claim in claims:
         claims_by_cluster[claim.claim_cluster_id or claim.id].append(claim)
-    results_by_claim_id = _latest_results_by_claim_id(verification_results)
+    results_by_claim_id = latest_results_by_claim_id(verification_results)
     unresolved: list[UnresolvedDisagreement] = []
     unresolved_statuses = {
         VerificationStatus.CONTRADICTED,
@@ -465,22 +466,6 @@ def _build_unresolved_disagreements(
             )
         )
     return unresolved
-
-
-def _latest_results_by_claim_id(
-    results: list[VerificationResult],
-) -> dict[UUID, VerificationResult]:
-    """Use only the newest immutable verification attempt in report output."""
-    latest: dict[UUID, VerificationResult] = {}
-    for result in results:
-        current = latest.get(result.claim_id)
-        if current is None or (result.attempt_number, result.created_at, str(result.id)) > (
-            current.attempt_number,
-            current.created_at,
-            str(current.id),
-        ):
-            latest[result.claim_id] = result
-    return latest
 
 
 def _unique_assessments(
@@ -843,7 +828,6 @@ def _build_statement_evidence_panels(
     evidence_links: list[EvidenceLink], verification_results: list[VerificationResult],
 ) -> dict[str, dict]:
     """Project immutable provenance into the panel data for each report statement."""
-    claims_by_id = {claim.id: claim for claim in claims}
     passages_by_id = {passage.id: passage for passage in passages}
     sources_by_id = {source.id: source for source in sources}
     translations_by_passage: dict[UUID, list[TranslationRecord]] = defaultdict(list)

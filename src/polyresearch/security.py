@@ -27,7 +27,10 @@ def is_allowed_domain(url: str, *, allowed: list[str], blocked: list[str]) -> bo
     host = (urlparse(url).hostname or "").casefold()
     allowed_domains = [item.casefold().lstrip(".") for item in allowed]
     blocked_domains = [item.casefold().lstrip(".") for item in blocked]
-    matches = lambda domain: host == domain or host.endswith("." + domain)
+
+    def matches(domain: str) -> bool:
+        return host == domain or host.endswith("." + domain)
+
     return bool(host) and not any(matches(domain) for domain in blocked_domains) and (
         not allowed_domains or any(matches(domain) for domain in allowed_domains)
     )

@@ -37,7 +37,10 @@ def merge_evidence_by_id(current_value, new_value):
     """Merge evidence collections without counting duplicate artifacts twice."""
     current_items = current_value or []
     new_items = new_value or []
-    artifact_id = lambda item: item.id if hasattr(item, "id") else item["id"]
+
+    def artifact_id(item):
+        return item.id if hasattr(item, "id") else item["id"]
+
     merged = {str(artifact_id(item)): item for item in current_items}
     merged.update({str(artifact_id(item)): item for item in new_items})
     return list(merged.values())

@@ -1,6 +1,5 @@
 import os
 import re
-from enum import Enum
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
@@ -9,12 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DEFAULT_QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_MODEL_ID_PATTERN = re.compile(r"qwen[a-z0-9._-]*", re.IGNORECASE)
-
-
-class ModelProvider(str, Enum):
-    """Model transport supported by this application."""
-
-    QWEN_OPENAI_COMPATIBLE = "qwen_openai_compatible"
 
 
 BAILIAN_WEB_SEARCH_MCP_URL = (
@@ -38,8 +31,6 @@ class BailianWebSearchConfig(BaseModel):
     authentication: BailianAuthenticationConfig = Field(
         default_factory=BailianAuthenticationConfig
     )
-    locale: str = Field(default="zh-CN")
-    query_language: str = Field(default="zh")
     timeout_seconds: float = Field(default=30, gt=0, le=120)
     max_requests_per_second: float = Field(default=15, gt=0, le=15)
 
@@ -58,20 +49,6 @@ class BailianWebSearchConfig(BaseModel):
             raise ValueError("Bailian Web Search may only load the 'web_search' MCP tool")
         return value
 
-    @field_validator("locale")
-    @classmethod
-    def validate_chinese_locale(cls, value: str) -> str:
-        if not value.lower().startswith("zh"):
-            raise ValueError("Bailian Web Search locale must be Chinese")
-        return value
-
-    @field_validator("query_language")
-    @classmethod
-    def validate_chinese_query_language(cls, value: str) -> str:
-        if value.lower() not in {"zh", "zh-cn", "zh-hans"}:
-            raise ValueError("Bailian Web Search query_language must be Chinese")
-        return value
-
 class Configuration(BaseModel):
     """Main configuration class for the Deep Research agent."""
 
@@ -85,8 +62,8 @@ class Configuration(BaseModel):
     # Research Configuration
     max_researcher_iterations: int = Field(default=3)
     max_react_tool_calls: int = Field(default=5)
-    max_queries_per_run: int = Field(default=20, ge=1, le=200)
-    max_source_fetches_per_run: int = Field(default=50, ge=1, le=500)
+    max_queries_per_run: int = Field(default=12, ge=1, le=15)
+    max_source_fetches_per_run: int = Field(default=20, ge=1, le=25)
     allowed_source_domains: list[str] = Field(default_factory=list)
     blocked_source_domains: list[str] = Field(default_factory=list)
     retain_raw_tool_output: bool = Field(default=True)
@@ -94,7 +71,6 @@ class Configuration(BaseModel):
     redact_persisted_secrets: bool = Field(default=True)
 
     # Model Configuration
-    model_provider: ModelProvider = Field(default=ModelProvider.QWEN_OPENAI_COMPATIBLE)
     qwen_base_url: str = Field(default=DEFAULT_QWEN_BASE_URL)
     research_model: str = Field(default="qwen3.7-max")
     research_model_max_tokens: int = Field(default=10000)

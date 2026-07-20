@@ -9,13 +9,11 @@ from langchain_core.runnables import RunnableConfig
 
 from polyresearch.configuration import Configuration
 
-def is_token_limit_exceeded(exception: Exception, model_name: str = None) -> bool:
+def is_token_limit_exceeded(exception: Exception) -> bool:
     """Determine if an exception indicates a token/context limit was exceeded.
     
     Args:
         exception: The exception to analyze
-        model_name: Optional model name to optimize provider detection
-        
     Returns:
         True if the exception indicates a token limit was exceeded, False otherwise
     """
