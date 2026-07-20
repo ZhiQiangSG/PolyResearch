@@ -8,24 +8,38 @@ from polyresearch.models.graph_state import (
     SupervisorState,
     override_reducer,
 )
+from polyresearch.models.evidence import (
+    Claim,
+    ClaimExtractionResult,
+    EvidenceLink,
+    EvidencePassage,
+    SourceRecord,
+    VerificationResult,
+    VerificationStatus,
+)
 from polyresearch.models.structured_outputs import (
     ClarifyWithUser,
     ConductResearch,
     ResearchComplete,
     ResearchQuestion,
-    Summary,
 )
 
 __all__ = [
     "AgentInputState",
     "AgentState",
+    "Claim",
+    "ClaimExtractionResult",
     "ClarifyWithUser",
     "ConductResearch",
+    "EvidenceLink",
+    "EvidencePassage",
     "ResearchComplete",
     "ResearcherOutputState",
     "ResearcherState",
     "ResearchQuestion",
-    "Summary",
+    "SourceRecord",
     "SupervisorState",
+    "VerificationResult",
+    "VerificationStatus",
     "override_reducer",
 ]

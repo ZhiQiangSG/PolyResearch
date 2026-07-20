@@ -2,13 +2,13 @@
 
 ## Mission
 
-Build PolyResearch as a multilingual, evidence-centric research operating system. It must discover evidence across the languages most likely to add unique information, verify disagreements, and produce transparent reports with line-level provenance.
+Build PolyResearch as a multilingual, evidence-centric research operating system. It must discover evidence across the languages most likely to add unique information, verify disagreements, and produce transparent reports with passage-level provenance.
 
 ## Non-negotiable principles
 
 1. Evidence comes before prose. Do not use an LLM-generated summary as the sole evidence for a factual assertion.
 2. Preserve original-language passages. A translation is a linked derivative, never a replacement.
-3. Every substantive final-report statement must trace to typed claims and line-level evidence.
+3. Every substantive final-report statement must trace to typed claims and passage-level evidence.
 4. Treat conflicting evidence as information to explain, not noise to smooth over.
 5. Count independent sources, not copies. Syndication, reposts, shared wire stories, and mirrors are not independent corroboration.
 6. Record provenance for every automated decision: source/query IDs, provider, timestamps, content hashes, model IDs, and prompt versions.

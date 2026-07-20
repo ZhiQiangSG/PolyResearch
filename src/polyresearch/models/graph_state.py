@@ -10,8 +10,15 @@ from typing import Annotated, Optional
 
 from langchain_core.messages import MessageLikeRepresentation
 from langgraph.graph import MessagesState
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
+
+from polyresearch.models.evidence import (
+    Claim,
+    EvidencePassage,
+    SourceRecord,
+    VerificationResult,
+)
 
 
 def override_reducer(current_value, new_value):
@@ -19,6 +26,16 @@ def override_reducer(current_value, new_value):
     if isinstance(new_value, dict) and new_value.get("type") == "override":
         return new_value.get("value", new_value)
     return operator.add(current_value, new_value)
+
+
+def merge_evidence_by_id(current_value, new_value):
+    """Merge evidence collections without counting duplicate artifacts twice."""
+    current_items = current_value or []
+    new_items = new_value or []
+    artifact_id = lambda item: item.id if hasattr(item, "id") else item["id"]
+    merged = {str(artifact_id(item)): item for item in current_items}
+    merged.update({str(artifact_id(item)): item for item in new_items})
+    return list(merged.values())
 
 
 class AgentInputState(MessagesState):
@@ -30,8 +47,10 @@ class AgentState(MessagesState):
 
     supervisor_messages: Annotated[list[MessageLikeRepresentation], override_reducer]
     research_brief: Optional[str]
-    raw_notes: Annotated[list[str], override_reducer] = []
-    notes: Annotated[list[str], override_reducer] = []
+    sources: Annotated[list[SourceRecord], merge_evidence_by_id]
+    passages: Annotated[list[EvidencePassage], merge_evidence_by_id]
+    claims: Annotated[list[Claim], merge_evidence_by_id]
+    verification_results: Annotated[list[VerificationResult], merge_evidence_by_id]
     final_report: str
 
 
@@ -40,9 +59,11 @@ class SupervisorState(TypedDict):
 
     supervisor_messages: Annotated[list[MessageLikeRepresentation], override_reducer]
     research_brief: str
-    notes: Annotated[list[str], override_reducer] = []
     research_iterations: int = 0
-    raw_notes: Annotated[list[str], override_reducer] = []
+    sources: Annotated[list[SourceRecord], merge_evidence_by_id]
+    passages: Annotated[list[EvidencePassage], merge_evidence_by_id]
+    claims: Annotated[list[Claim], merge_evidence_by_id]
+    verification_results: Annotated[list[VerificationResult], merge_evidence_by_id]
 
 
 class ResearcherState(TypedDict):
@@ -51,12 +72,16 @@ class ResearcherState(TypedDict):
     researcher_messages: Annotated[list[MessageLikeRepresentation], operator.add]
     tool_call_iterations: int = 0
     research_topic: str
-    compressed_research: str
-    raw_notes: Annotated[list[str], override_reducer] = []
+    sources: Annotated[list[SourceRecord], merge_evidence_by_id]
+    passages: Annotated[list[EvidencePassage], merge_evidence_by_id]
+    claims: Annotated[list[Claim], merge_evidence_by_id]
+    verification_results: Annotated[list[VerificationResult], merge_evidence_by_id]
 
 
 class ResearcherOutputState(BaseModel):
     """Typed output emitted by an individual researcher subgraph."""
 
-    compressed_research: str
-    raw_notes: Annotated[list[str], override_reducer] = []
+    sources: list[SourceRecord] = Field(default_factory=list)
+    passages: list[EvidencePassage] = Field(default_factory=list)
+    claims: list[Claim] = Field(default_factory=list)
+    verification_results: list[VerificationResult] = Field(default_factory=list)

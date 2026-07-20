@@ -18,13 +18,6 @@ class ResearchComplete(BaseModel):
     """Signal that a research phase is complete."""
 
 
-class Summary(BaseModel):
-    """Research summary with its key supporting excerpts."""
-
-    summary: str
-    key_excerpts: str
-
-
 class ClarifyWithUser(BaseModel):
     """Structured result for deciding whether research scope needs clarification."""
 

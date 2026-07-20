@@ -4,7 +4,7 @@
 
 Transform PolyResearch from a prompt-and-summary research agent into a multilingual research operating system that:
 
-- discovers material knowledge across the languages most likely to contain unique evidence;
+- discovers material knowledge across the languages most likely to contain unique and important evidence;
 - preserves original source material and creates durable, passage-level provenance;
 - identifies, verifies, and explains conflicting claims rather than blending them into one narrative;
 - uses Qwen's multilingual reasoning to plan, normalize, verify, and write;

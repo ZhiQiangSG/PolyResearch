@@ -1,9 +1,11 @@
 import asyncio
+import json
 from typing import Literal, cast
 
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
+    MessageLikeRepresentation,
     SystemMessage,
     ToolMessage,
     filter_messages,
@@ -19,8 +21,6 @@ from polyresearch.configuration import (
 )
 from polyresearch.prompts import (
     clarify_with_user_instructions,
-    compress_research_simple_human_message,
-    compress_research_system_prompt,
     final_report_generation_prompt,
     lead_researcher_prompt,
     research_system_prompt,
@@ -32,19 +32,22 @@ from polyresearch.models import (
     ClarifyWithUser,
     ConductResearch,
     ResearchComplete,
+    Claim,
+    ClaimExtractionResult,
+    EvidencePassage,
     ResearcherOutputState,
     ResearcherState,
     ResearchQuestion,
+    SourceRecord,
     SupervisorState,
+    VerificationResult,
 )
 from polyresearch.utils import (
     create_qwen_chat_model,
     get_all_tools,
     get_model_token_limit,
-    get_notes_from_tool_calls,
     get_today_str,
     is_token_limit_exceeded,
-    remove_up_to_last_ai_message,
     think_tool,
 )
 
@@ -255,10 +258,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     if exceeded_allowed_iterations or no_tool_calls or research_complete_tool_call:
         return Command(
             goto="__end__",
-            update={
-                "notes": get_notes_from_tool_calls(supervisor_messages),
-                "research_brief": state.get("research_brief", "")
-            }
+            update={"research_brief": state.get("research_brief", "")},
         )
     
     # Step 2: Process all tool calls together (both think_tool and ConductResearch)
@@ -314,7 +314,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                     ))
                     continue
                 all_tool_messages.append(ToolMessage(
-                    content=observation.get("compressed_research", "Error synthesizing research report: Maximum retries exceeded"),
+                    content=_researcher_evidence_summary(observation),
                     name=tool_call["name"],
                     tool_call_id=tool_call["id"]
                 ))
@@ -327,15 +327,16 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                     tool_call_id=overflow_call["id"]
                 ))
             
-            # Aggregate raw notes from all research results
-            raw_notes_concat = "\n".join([
-                "\n".join(observation.get("raw_notes", [])) 
-                for observation in tool_results
-                if not isinstance(observation, Exception)
-            ])
-            
-            if raw_notes_concat:
-                update_payload["raw_notes"] = [raw_notes_concat]
+            # Pass typed evidence records through the supervisor.
+            for field in ("sources", "passages", "claims", "verification_results"):
+                artifacts = [
+                    artifact
+                    for observation in tool_results
+                    if not isinstance(observation, Exception)
+                    for artifact in observation.get(field, [])
+                ]
+                if artifacts:
+                    update_payload[field] = artifacts
                 
         except Exception as e:
             raise RuntimeError("Failed to orchestrate parallel research tasks") from e
@@ -430,7 +431,63 @@ async def execute_tool_safely(tool, args, config):
         return f"Error executing tool: {str(e)}"
 
 
-async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Command[Literal["researcher", "compress_research"]]:
+def _evidence_from_tool_messages(
+    messages: list[MessageLikeRepresentation],
+) -> tuple[list[SourceRecord], list[EvidencePassage]]:
+    """Recover typed Tavily evidence records from tool-message payloads."""
+    sources: dict[str, SourceRecord] = {}
+    passages: dict[str, EvidencePassage] = {}
+    for message in filter_messages(messages, include_types="tool"):
+        if not isinstance(message.content, str):
+            continue
+        try:
+            payload = json.loads(message.content)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("type") != "polyresearch_evidence":
+            continue
+        try:
+            for source_data in payload.get("sources", []):
+                source = SourceRecord.model_validate(source_data)
+                sources[str(source.id)] = source
+            for passage_data in payload.get("passages", []):
+                passage = EvidencePassage.model_validate(passage_data)
+                passages[str(passage.id)] = passage
+        except (TypeError, ValueError):
+            continue
+    return list(sources.values()), list(passages.values())
+
+
+def _researcher_evidence_summary(observation: dict) -> str:
+    """Render typed researcher artifacts for the supervisor's tool context."""
+    claims = observation.get("claims", [])
+    if not claims:
+        return "No passage-linked claims were extracted from this research task."
+    return json.dumps(
+        {
+            "type": "polyresearch_claims",
+            "claims": [
+                claim.model_dump(mode="json") if isinstance(claim, Claim) else claim
+                for claim in claims
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _serialize_artifacts(artifacts, model_type):
+    """Serialize state artifacts whether LangGraph returns models or dictionaries."""
+    return [
+        (
+            artifact.model_dump(mode="json")
+            if isinstance(artifact, model_type)
+            else model_type.model_validate(artifact).model_dump(mode="json")
+        )
+        for artifact in artifacts
+    ]
+
+
+async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Command[Literal["researcher", "extract_claims"]]:
     """Execute tools called by the researcher, including search tools and strategic thinking.
     
     This function handles various types of researcher tool calls:
@@ -444,7 +501,7 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
         config: Runtime configuration with research limits and tool settings
         
     Returns:
-        Command to either continue research loop or proceed to compression
+        Command to either continue research loop or extract typed claims
     """
     # Step 1: Extract current state and check early exit conditions
     configurable = Configuration.from_runnable_config(config)
@@ -455,7 +512,7 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     has_tool_calls = bool(most_recent_message.tool_calls)
     
     if not has_tool_calls:
-        return Command(goto="compress_research")
+        return Command(goto="extract_claims")
     
     # Step 2: Handle other tool calls (search, MCP tools, etc.)
     tools = await get_all_tools(config)
@@ -490,9 +547,9 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     )
     
     if exceeded_iterations or research_complete_called:
-        # End research and proceed to compression
+        # End research and extract claims from original passages.
         return Command(
-            goto="compress_research",
+            goto="extract_claims",
             update={"researcher_messages": tool_outputs}
         )
     
@@ -502,80 +559,69 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
         update={"researcher_messages": tool_outputs}
     )
 
-async def compress_research(state: ResearcherState, config: RunnableConfig):
-    """Compress and synthesize research findings into a concise, structured summary.
-    
-    This function takes all the research findings, tool outputs, and AI messages from
-    a researcher's work and distills them into a clean, comprehensive summary while
-    preserving all important information and findings.
+async def extract_claims(state: ResearcherState, config: RunnableConfig):
+    """Extract passage-linked claims from the researcher's typed evidence.
     
     Args:
         state: Current researcher state with accumulated research messages
         config: Runtime configuration with compression model settings
         
     Returns:
-        Dictionary containing compressed research summary and raw notes
+        Typed source, passage, claim, and verification-result collections
     """
-    # Step 1: Configure the compression model
+    # Step 1: Recover the original source passages captured by search tools.
+    researcher_messages = state.get("researcher_messages", [])
+    sources, passages = _evidence_from_tool_messages(researcher_messages)
+    if not passages:
+        return {
+            "sources": sources,
+            "passages": passages,
+            "claims": [],
+            "verification_results": [],
+        }
+
+    # Step 2: Configure structured claim extraction.
     configurable = Configuration.from_runnable_config(config)
-    synthesizer_model = create_qwen_chat_model(
+    claim_extractor = create_qwen_chat_model(
         configurable,
         configurable.compression_model,
         configurable.compression_model_max_tokens,
         config,
+    ).with_structured_output(ClaimExtractionResult).with_retry(
+        stop_after_attempt=configurable.max_structured_output_retries
     )
-    
-    # Step 2: Prepare messages for compression
-    researcher_messages = state.get("researcher_messages", [])
-    
-    # Add instruction to switch from research mode to compression mode
-    researcher_messages.append(HumanMessage(content=compress_research_simple_human_message))
-    
-    # Step 3: Attempt compression with retry logic for token limit issues
-    synthesis_attempts = 0
-    max_attempts = 3
-    
-    while synthesis_attempts < max_attempts:
-        try:
-            # Create system prompt focused on compression task
-            compression_prompt = compress_research_system_prompt.format(date=get_today_str())
-            messages = [SystemMessage(content=compression_prompt)] + researcher_messages
-            
-            # Execute compression
-            response = await synthesizer_model.ainvoke(messages)
-            
-            # Extract raw notes from all tool and AI messages
-            raw_notes_content = "\n".join([
-                str(message.content) 
-                for message in filter_messages(researcher_messages, include_types=["tool", "ai"])
-            ])
-            
-            # Return successful compression result
-            return {
-                "compressed_research": str(response.content),
-                "raw_notes": [raw_notes_content]
-            }
-            
-        except Exception as e:
-            synthesis_attempts += 1
-            
-            # Handle token limit exceeded by removing older messages
-            if is_token_limit_exceeded(e, configurable.research_model):
-                researcher_messages = remove_up_to_last_ai_message(researcher_messages)
-                continue
-            
-            # For other errors, continue retrying
-            continue
-    
-    # Step 4: Return error result if all attempts failed
-    raw_notes_content = "\n".join([
-        str(message.content) 
-        for message in filter_messages(researcher_messages, include_types=["tool", "ai"])
-    ])
-    
+    extraction_prompt = (
+        "Extract only atomic, falsifiable claims directly supported by the supplied "
+        "evidence. Each claim must cite one or more exact passage IDs from the "
+        "tool payload. Do not invent sources, passage IDs, or verification results."
+    )
+
+    try:
+        response = cast(
+            ClaimExtractionResult,
+            await claim_extractor.ainvoke(
+                [SystemMessage(content=extraction_prompt), *researcher_messages]
+            ),
+        )
+    except Exception:
+        return {
+            "sources": sources,
+            "passages": passages,
+            "claims": [],
+            "verification_results": [],
+        }
+
+    known_passage_ids = {passage.id for passage in passages}
+    claims = [
+        claim
+        for claim in response.claims
+        if set(claim.evidence_passage_ids).issubset(known_passage_ids)
+    ]
     return {
-        "compressed_research": "Error synthesizing research report: Maximum retries exceeded",
-        "raw_notes": [raw_notes_content]
+        "sources": sources,
+        "passages": passages,
+        "claims": claims,
+        "verification_results": [],
     }
 
 # Researcher Subgraph Construction
@@ -586,14 +632,14 @@ researcher_builder = StateGraph(
     context_schema=Configuration
 )
 
-# Add researcher nodes for research execution and compression
+# Add researcher nodes for research execution and claim extraction.
 researcher_builder.add_node("researcher", researcher)                 # Main researcher logic
 researcher_builder.add_node("researcher_tools", researcher_tools)     # Tool execution handler
-researcher_builder.add_node("compress_research", compress_research)   # Research compression
+researcher_builder.add_node("extract_claims", extract_claims)         # Claim extraction
 
 # Define researcher workflow edges
 researcher_builder.add_edge(START, "researcher")           # Entry point to researcher
-researcher_builder.add_edge("compress_research", END)      # Exit point after compression
+researcher_builder.add_edge("extract_claims", END)          # Exit point after claim extraction
 
 # Compile researcher subgraph for parallel execution by supervisor
 researcher_subgraph = researcher_builder.compile()
@@ -612,9 +658,17 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
         Dictionary containing the final report and cleared state
     """
     # Step 1: Extract research findings and prepare state cleanup
-    notes = state.get("notes", [])
-    cleared_state = {"notes": {"type": "override", "value": []}}
-    findings = "\n".join(notes)
+    findings = json.dumps(
+        {
+            "sources": _serialize_artifacts(state.get("sources", []), SourceRecord),
+            "passages": _serialize_artifacts(state.get("passages", []), EvidencePassage),
+            "claims": _serialize_artifacts(state.get("claims", []), Claim),
+            "verification_results": _serialize_artifacts(
+                state.get("verification_results", []), VerificationResult
+            ),
+        },
+        ensure_ascii=False,
+    )
     
     # Step 2: Configure the final report generation model
     configurable = Configuration.from_runnable_config(config)
@@ -649,7 +703,6 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
             return {
                 "final_report": final_report.content, 
                 "messages": [final_report],
-                **cleared_state
             }
             
         except Exception as e:
@@ -664,7 +717,6 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                         return {
                             "final_report": f"Error generating final report: Token limit exceeded, however, we could not determine the model's maximum context length. Please update the model map in deep_researcher/utils.py with this information. {e}",
                             "messages": [AIMessage(content="Report generation failed due to token limits")],
-                            **cleared_state
                         }
                     # Use 4x token limit as character approximation for truncation
                     findings_token_limit = model_token_limit * 4
@@ -680,14 +732,12 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 return {
                     "final_report": f"Error generating final report: {e}",
                     "messages": [AIMessage(content="Report generation failed due to an error")],
-                    **cleared_state
                 }
     
     # Step 4: Return failure result if all retries exhausted
     return {
         "final_report": "Error generating final report: Maximum retries exceeded",
         "messages": [AIMessage(content="Report generation failed after maximum retries")],
-        **cleared_state
     }
 
 # Main Deep Researcher Graph Construction

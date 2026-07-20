@@ -1,6 +1,8 @@
 """Utility functions and helpers for the Deep Research agent."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import warnings
@@ -30,8 +32,7 @@ from mcp import McpError
 from tavily import AsyncTavilyClient
 
 from polyresearch.configuration import Configuration, SearchAPI
-from polyresearch.prompts import summarize_webpage_prompt
-from polyresearch.models import ResearchComplete, Summary
+from polyresearch.models import EvidencePassage, ResearchComplete, SourceRecord
 
 # --- Tavily Search Tool Utils ---
 
@@ -46,7 +47,7 @@ async def tavily_search(
     topic: Annotated[Literal["general", "news", "finance"], InjectedToolArg] = "general",
     config: RunnableConfig = None
 ) -> str:
-    """Fetch and summarize search results from Tavily search API.
+    """Fetch source records and exact passages from Tavily search API.
 
     Args:
         queries: List of search queries to execute
@@ -66,7 +67,7 @@ async def tavily_search(
         config=config
     )
     
-    # Step 2: Deduplicate results by URL to avoid processing the same content multiple times
+    # Step 2: Deduplicate results by URL to avoid processing the same content multiple times.
     unique_results = {}
     for response in search_results:
         for result in response['results']:
@@ -74,64 +75,41 @@ async def tavily_search(
             if url not in unique_results:
                 unique_results[url] = {**result, "query": response['query']}
     
-    # Step 3: Set up the summarization model with configuration
-    configurable = Configuration.from_runnable_config(config)
-    
-    # Character limit to stay within model token limits (configurable)
-    max_char_to_include = configurable.max_content_length
-    
-    # Initialize summarization model with retry logic
-    summarization_model = create_qwen_chat_model(
-        configurable,
-        configurable.summarization_model,
-        configurable.summarization_model_max_tokens,
-        config,
-    ).with_structured_output(Summary).with_retry(
-        stop_after_attempt=configurable.max_structured_output_retries
-    )
-    
-    # Step 4: Create summarization tasks (skip empty content)
-    async def noop():
-        """No-op function for results without raw content."""
-        return None
-    
-    summarization_tasks = [
-        noop() if not result.get("raw_content") 
-        else summarize_webpage(
-            summarization_model, 
-            result['raw_content'][:max_char_to_include]
+    # Step 3: Preserve original content as typed source and passage evidence.
+    # Search snippets are discovery aids; a passage must contain source text that can
+    # later be linked to a claim, rather than an LLM-generated summary.
+    sources: list[SourceRecord] = []
+    passages: list[EvidencePassage] = []
+    for result in unique_results.values():
+        original_text = result.get("raw_content") or result.get("content")
+        if not original_text:
+            continue
+
+        content_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
+        source = SourceRecord(
+            canonical_url=result["url"],
+            title=result.get("title") or result["url"],
+            content_hash=content_hash,
         )
-        for result in unique_results.values()
-    ]
-    
-    # Step 5: Execute all summarization tasks in parallel
-    summaries = await asyncio.gather(*summarization_tasks)
-    
-    # Step 6: Combine results with their summaries
-    summarized_results = {
-        url: {
-            'title': result['title'], 
-            'content': result['content'] if summary is None else summary
-        }
-        for url, result, summary in zip(
-            unique_results.keys(), 
-            unique_results.values(), 
-            summaries
+        passage = EvidencePassage(
+            source_id=source.id,
+            text=original_text,
+            locator="retrieved-content",
         )
-    }
-    
-    # Step 7: Format the final output
-    if not summarized_results:
+        sources.append(source)
+        passages.append(passage)
+
+    if not sources:
         return "No valid search results found. Please try different search queries or use a different search API."
-    
-    formatted_output = "Search results: \n\n"
-    for i, (url, result) in enumerate(summarized_results.items()):
-        formatted_output += f"\n\n--- SOURCE {i+1}: {result['title']} ---\n"
-        formatted_output += f"URL: {url}\n\n"
-        formatted_output += f"SUMMARY:\n{result['content']}\n\n"
-        formatted_output += "\n\n" + "-" * 80 + "\n"
-    
-    return formatted_output
+
+    return json.dumps(
+        {
+            "type": "polyresearch_evidence",
+            "sources": [source.model_dump(mode="json") for source in sources],
+            "passages": [passage.model_dump(mode="json") for passage in passages],
+        },
+        ensure_ascii=False,
+    )
 
 async def tavily_search_async(
     search_queries, 
@@ -169,46 +147,6 @@ async def tavily_search_async(
     # Execute all search queries in parallel and return results
     search_results = await asyncio.gather(*search_tasks)
     return search_results
-
-async def summarize_webpage(model: BaseChatModel, webpage_content: str) -> str:
-    """Summarize webpage content using AI model with timeout protection.
-    
-    Args:
-        model: The chat model configured for summarization
-        webpage_content: Raw webpage content to be summarized
-        
-    Returns:
-        Formatted summary with key excerpts, or original content if summarization fails
-    """
-    try:
-        # Create prompt with current date context
-        prompt_content = summarize_webpage_prompt.format(
-            webpage_content=webpage_content, 
-            date=get_today_str()
-        )
-        
-        # Execute summarization with timeout to prevent hanging
-        summary = await asyncio.wait_for(
-            model.ainvoke([HumanMessage(content=prompt_content)]),
-            timeout=60.0  # 60 second timeout for summarization
-        )
-        
-        # Format the summary with structured sections
-        formatted_summary = (
-            f"<summary>\n{summary.summary}\n</summary>\n\n"
-            f"<key_excerpts>\n{summary.key_excerpts}\n</key_excerpts>"
-        )
-        
-        return formatted_summary
-        
-    except asyncio.TimeoutError:
-        # Timeout during summarization - return original content
-        logging.warning("Summarization timed out after 60 seconds, returning original content")
-        return webpage_content
-    except Exception as e:
-        # Other errors during summarization - log and return original content
-        logging.warning(f"Summarization failed with error: {str(e)}, returning original content")
-        return webpage_content
 
 # --- Reflection Tool Utils ---
 
@@ -576,11 +514,6 @@ async def get_all_tools(config: RunnableConfig):
     tools.extend(mcp_tools)
     
     return tools
-
-def get_notes_from_tool_calls(messages: list[MessageLikeRepresentation]):
-    """Extract notes from tool call messages."""
-    return [tool_msg.content for tool_msg in filter_messages(messages, include_types="tool")]
-
 
 # --- Token Limit Exceeded Utils ---
 
