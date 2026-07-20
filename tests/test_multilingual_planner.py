@@ -1,4 +1,5 @@
 import importlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,22 @@ def _selection_assessment() -> LanguageSelectionAssessment:
     )
 
 
+def _fixture_selection_assessment(language: str) -> LanguageSelectionAssessment:
+    return LanguageSelectionAssessment(
+        place_and_institutional_jurisdiction=f"Fixture jurisdiction supports {language}.",
+        primary_actors_and_official_records=f"Relevant records are available in {language}.",
+        scholarly_technical_and_media_ecosystems=f"The {language} ecosystem adds context.",
+        diasporic_or_regional_coverage="Not applicable for this fixture.",
+        primary_source_availability=f"Primary sources are expected in {language}.",
+        marginal_information_gain=f"{language} adds material evidence beyond earlier languages.",
+    )
+
+
+def _load_multilingual_fixtures() -> list[dict]:
+    fixture_path = Path(__file__).parent / "fixtures" / "multilingual_planner_cases.json"
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
 class _PlannerStub:
     def __init__(self, plan: ResearchPlan) -> None:
         self.plan = plan
@@ -48,6 +65,71 @@ class _PlannerStub:
 
 
 class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
+    def test_multilingual_planner_fixtures_preserve_aliases_scripts_and_language_value(self):
+        for fixture in _load_multilingual_fixtures():
+            with self.subTest(fixture=fixture["id"]):
+                languages = fixture["languages"]
+                plan = ResearchPlan(
+                    run_id=uuid4(),
+                    subquestions=[
+                        AtomicSubquestion(
+                            question="What evidence answers the fixture question?",
+                            answer_scope="Find source-backed evidence for the fixture entity.",
+                        )
+                    ],
+                    entities=[ResearchEntity.model_validate(fixture["entity"])],
+                    terminology=[
+                        TerminologyRecord.model_validate(term)
+                        for term in fixture["terminology"]
+                    ],
+                    ranked_languages=[
+                        ResearchLanguage(
+                            language=language["language"],
+                            priority=language["priority"],
+                            query_budget=language["query_budget"],
+                            expected_unique_value=language["expected_unique_value"],
+                            selection_rationale=language["expected_unique_value"],
+                            selection_assessment=_fixture_selection_assessment(
+                                language["language"]
+                            ),
+                            expected_source_types=language["expected_source_types"],
+                        )
+                        for language in languages
+                    ],
+                    language_rationale={
+                        language["language"]: language["expected_unique_value"]
+                        for language in languages
+                    },
+                    query_variants={
+                        language["language"]: language["queries"] for language in languages
+                    },
+                )
+                expected = fixture["expected"]
+                entity = plan.entities[0]
+                self.assertTrue(
+                    set(expected.get("aliases", [])).issubset(entity.aliases)
+                )
+                self.assertTrue(
+                    set(expected.get("native_scripts", [])).issubset(
+                        entity.native_script_variants
+                    )
+                )
+                if "disambiguation_contains" in expected:
+                    self.assertIn(expected["disambiguation_contains"], entity.disambiguation)
+                if "first_language" in expected:
+                    self.assertEqual(plan.ranked_languages[0].language, expected["first_language"])
+                if "not_first_language" in expected:
+                    self.assertNotEqual(
+                        plan.ranked_languages[0].language,
+                        expected["not_first_language"],
+                    )
+                self.assertEqual(
+                    [language.priority for language in plan.ranked_languages],
+                    sorted(language.priority for language in plan.ranked_languages),
+                )
+                for language in plan.ranked_languages:
+                    self.assertTrue(plan.query_variants[language.language])
+
     def test_plan_requires_atomic_subquestions_and_queries_for_ranked_languages(self):
         with self.assertRaises(ValueError):
             ResearchPlan(

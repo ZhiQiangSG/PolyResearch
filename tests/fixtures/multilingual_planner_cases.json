@@ -1,0 +1,107 @@
+[
+  {
+    "id": "multilingual_aliases",
+    "entity": {
+      "canonical_name": "Mao Zedong",
+      "aliases": ["Mao Tse-tung"],
+      "transliterations": ["Máo Zédōng"],
+      "native_script_variants": ["毛泽东"]
+    },
+    "terminology": [{
+      "original_term": "新民主主义",
+      "original_language": "zh",
+      "normalized_term": "New Democracy",
+      "translated_term": "New Democracy",
+      "translation_equivalence": "approximate",
+      "translation_note": "The political term has context-specific historical meaning."
+    }],
+    "languages": [{
+      "language": "zh",
+      "priority": 1,
+      "query_budget": 3,
+      "expected_unique_value": "Chinese primary texts and archival descriptions.",
+      "expected_source_types": ["primary", "archive"],
+      "queries": ["毛泽东 新民主主义", "毛泽东 文集"]
+    }],
+    "expected": {"aliases": ["Mao Tse-tung"], "native_scripts": ["毛泽东"]}
+  },
+  {
+    "id": "mixed_scripts",
+    "entity": {
+      "canonical_name": "Kyiv",
+      "aliases": ["Kiev"],
+      "transliterations": ["Kyiv", "Kyyiv"],
+      "native_script_variants": ["Київ", "Киев"]
+    },
+    "terminology": [],
+    "languages": [{
+      "language": "uk",
+      "priority": 1,
+      "query_budget": 3,
+      "expected_unique_value": "Ukrainian municipal and national records.",
+      "expected_source_types": ["official"],
+      "queries": ["Київ міська рада", "Київ офіційно"]
+    }, {
+      "language": "ru",
+      "priority": 2,
+      "query_budget": 1,
+      "expected_unique_value": "Historical Russian-script variants for archive discovery.",
+      "expected_source_types": ["archive"],
+      "queries": ["Киев архив"]
+    }],
+    "expected": {"native_scripts": ["Київ", "Киев"], "first_language": "uk"}
+  },
+  {
+    "id": "ambiguous_name",
+    "entity": {
+      "canonical_name": "Georgia (country)",
+      "aliases": ["Georgia", "Sakartvelo"],
+      "transliterations": ["Sakartvelo"],
+      "native_script_variants": ["საქართველო"],
+      "disambiguation": "The sovereign country in the South Caucasus, not the U.S. state."
+    },
+    "terminology": [],
+    "languages": [{
+      "language": "ka",
+      "priority": 1,
+      "query_budget": 3,
+      "expected_unique_value": "Georgian government and domestic reporting.",
+      "expected_source_types": ["official", "news"],
+      "queries": ["საქართველო მთავრობა", "საკარტველო ოფიციალური"]
+    }],
+    "expected": {"disambiguation_contains": "not the U.S. state", "native_scripts": ["საქართველო"]}
+  },
+  {
+    "id": "non_english_primary_sources",
+    "entity": {
+      "canonical_name": "Fukushima Daiichi Nuclear Power Station",
+      "aliases": ["Fukushima Daiichi"],
+      "transliterations": ["Fukushima Daiichi Genshiryoku Hatsudensho"],
+      "native_script_variants": ["福島第一原子力発電所"]
+    },
+    "terminology": [{
+      "original_term": "廃炉",
+      "original_language": "ja",
+      "normalized_term": "decommissioning",
+      "translated_term": "decommissioning",
+      "translation_equivalence": "approximate",
+      "translation_note": "The Japanese term can carry regulatory and operational nuances."
+    }],
+    "languages": [{
+      "language": "ja",
+      "priority": 1,
+      "query_budget": 4,
+      "expected_unique_value": "Japanese regulator and operator primary records.",
+      "expected_source_types": ["official", "primary"],
+      "queries": ["福島第一原子力発電所 廃炉", "原子力規制委員会 福島第一"]
+    }, {
+      "language": "en",
+      "priority": 2,
+      "query_budget": 1,
+      "expected_unique_value": "International agency bridge coverage.",
+      "expected_source_types": ["official"],
+      "queries": ["Fukushima Daiichi decommissioning IAEA"]
+    }],
+    "expected": {"first_language": "ja", "not_first_language": "en"}
+  }
+]

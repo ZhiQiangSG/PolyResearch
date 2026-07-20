@@ -26,6 +26,7 @@ class ResearchEntity(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     transliterations: list[str] = Field(default_factory=list)
     native_script_variants: list[str] = Field(default_factory=list)
+    disambiguation: str | None = None
 
 
 class TerminologyRecord(BaseModel):
