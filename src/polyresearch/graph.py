@@ -29,7 +29,6 @@ from polyresearch.models import (
     EvidencePassage,
     LanguageDecision,
     LanguageExpansionDecision,
-    ProvenanceAttachment,
     ReportBundle,
     ReportDraft,
     ReportQaIssue,
@@ -41,11 +40,23 @@ from polyresearch.models import (
     ResearchQuestion,
     ResearchRun,
     SourceRecord,
+    SupervisorState,
     TranslationDraft,
     TranslationRecord,
-    SupervisorState,
     VerificationResult,
     VerificationStatus,
+)
+from polyresearch.nodes.provenance import (
+    load_evidence_ledger as _load_evidence_ledger,
+)
+from polyresearch.nodes.provenance import (
+    persist_non_tavily_tool_outputs as _persist_non_tavily_tool_outputs,
+)
+from polyresearch.nodes.provenance import (
+    researcher_evidence_summary as _researcher_evidence_summary,
+)
+from polyresearch.nodes.provenance import (
+    serialize_artifacts as _serialize_artifacts,
 )
 from polyresearch.prompts import (
     clarify_with_user_instructions,
@@ -58,12 +69,7 @@ from polyresearch.prompts import (
 )
 from polyresearch.report_qa import validate_report_statements
 from polyresearch.repositories import RunContext
-from polyresearch.nodes.provenance import (
-    load_evidence_ledger as _load_evidence_ledger,
-    persist_non_tavily_tool_outputs as _persist_non_tavily_tool_outputs,
-    researcher_evidence_summary as _researcher_evidence_summary,
-    serialize_artifacts as _serialize_artifacts,
-)
+from polyresearch.source_ingestion import languages_match
 from polyresearch.utils import (
     create_qwen_chat_model,
     get_all_tools,
@@ -73,7 +79,6 @@ from polyresearch.utils import (
     select_citable_passages,
     think_tool,
 )
-from polyresearch.source_ingestion import languages_match
 
 
 async def initialize_research_run(
@@ -1080,7 +1085,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                     model_token_limit = get_model_token_limit(configurable.final_report_model)
                     if not model_token_limit:
                         return {
-                            "final_report": f"Error generating final report: Token limit exceeded, however, we could not determine the model's maximum context length. Please update the model map in deep_researcher/utils.py with this information. {e}",
+                            "final_report": f"Error generating final report: Token limit exceeded, however, we could not determine the model's maximum context length: {e}",
                             "messages": [AIMessage(content="Report generation failed due to token limits")],
                         }
                     # Use 4x token limit as character approximation for truncation

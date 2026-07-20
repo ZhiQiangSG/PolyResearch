@@ -2,8 +2,9 @@
 
 import argparse
 import asyncio
+import json
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from langchain_core.messages import HumanMessage
 
@@ -18,6 +19,16 @@ def build_parser() -> argparse.ArgumentParser:
         "query",
         nargs="*",
         help="Research question to investigate.",
+    )
+    parser.add_argument(
+        "--inspect-ledger",
+        metavar="RUN_ID",
+        help="Print sources, passages, translations, discovery queries, and claims for a run.",
+    )
+    parser.add_argument(
+        "--source-id",
+        metavar="SOURCE_ID",
+        help="Limit --inspect-ledger output to one source UUID.",
     )
     return parser
 
@@ -48,10 +59,80 @@ async def run_query(query: str) -> str:
         repository.close()
 
 
+async def build_ledger_inspection(
+    repository, run_id: UUID, source_id: UUID | None = None
+) -> dict:
+    """Build a read-only source-to-claim view from the typed evidence ledger."""
+    sources, passages, translations, queries, claims = await asyncio.gather(
+        repository.list_sources(run_id),
+        repository.list_passages(run_id),
+        repository.list_translations(run_id),
+        repository.list_query_records(run_id),
+        repository.list_claims(run_id),
+    )
+    if source_id is not None:
+        sources = [source for source in sources if source.id == source_id]
+        if not sources:
+            raise ValueError(f"Source {source_id} does not exist in run {run_id}")
+
+    inspected_sources = []
+    for source in sources:
+        source_passages = [passage for passage in passages if passage.source_id == source.id]
+        passage_ids = {passage.id for passage in source_passages}
+        source_translations = [
+            translation for translation in translations if translation.passage_id in passage_ids
+        ]
+        downstream_claims = [
+            claim for claim in claims if passage_ids.intersection(claim.evidence_passage_ids)
+        ]
+        associated_urls = {source.canonical_url, source.discovered_url}
+        source_queries = [
+            query
+            for query in queries
+            if query.result_url is None or query.result_url in associated_urls
+        ]
+        inspected_sources.append(
+            {
+                "source": source.model_dump(mode="json"),
+                "passages": [passage.model_dump(mode="json") for passage in source_passages],
+                "translations": [
+                    translation.model_dump(mode="json") for translation in source_translations
+                ],
+                "queries": [query.model_dump(mode="json") for query in source_queries],
+                "downstream_claims": [claim.model_dump(mode="json") for claim in downstream_claims],
+            }
+        )
+    return {"run_id": str(run_id), "sources": inspected_sources}
+
+
+async def inspect_ledger(run_id: str, source_id: str | None = None) -> str:
+    """Open the configured local ledger and render a JSON inspection view."""
+    from polyresearch.repositories import SqliteEvidenceRepository
+
+    repository = SqliteEvidenceRepository(
+        os.environ.get("POLYRESEARCH_DB_PATH", "polyresearch.db")
+    )
+    try:
+        inspection = await build_ledger_inspection(
+            repository,
+            UUID(run_id),
+            UUID(source_id) if source_id else None,
+        )
+        return json.dumps(inspection, ensure_ascii=False, indent=2)
+    finally:
+        repository.close()
+
+
 def main() -> None:
     """Run the CLI, displaying help when no research question is provided."""
     parser = build_parser()
     args = parser.parse_args()
+    if args.inspect_ledger:
+        try:
+            print(asyncio.run(inspect_ledger(args.inspect_ledger, args.source_id)))
+        except (ValueError, LookupError) as error:
+            parser.error(str(error))
+        return
     query = " ".join(args.query).strip()
     if not query:
         parser.print_help()
