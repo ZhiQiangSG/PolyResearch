@@ -4,6 +4,7 @@ from uuid import uuid4
 from polyresearch.models import (
     Claim,
     EvidencePassage,
+    QueryRecord,
     ReportDraft,
     ReportStatementDraft,
     ReportStatement,
@@ -11,7 +12,7 @@ from polyresearch.models import (
     VerificationStatus,
 )
 from polyresearch import graph as graph_module
-from polyresearch.report_qa import validate_report_statements
+from polyresearch.evidence.report_qa import validate_report_statements
 
 
 class ReportQaTests(unittest.TestCase):
@@ -98,3 +99,22 @@ class ReportQaTests(unittest.TestCase):
             {issue.code for issue in issues},
             {"unknown_claim_id", "missing_citation", "wording_exceeds_verification_status"},
         )
+
+    def test_blocks_statement_without_discovery_trace(self) -> None:
+        statement = ReportStatement(
+            run_id=self.run_id,
+            rendered_text="The policy changed on 1 January.",
+            claim_ids=[self.claim.id],
+            citation_ids=[self.passage.id],
+            verification_status=VerificationStatus.SUPPORTED,
+        )
+
+        issues = validate_report_statements(
+            statements=[statement],
+            claims=[self.claim],
+            passages=[self.passage],
+            sources=[self.source],
+            queries=[],
+        )
+
+        self.assertEqual([issue.code for issue in issues], ["incomplete_discovery_trace"])

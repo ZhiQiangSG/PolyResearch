@@ -5,7 +5,7 @@ from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DEFAULT_QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_MODEL_ID_PATTERN = re.compile(r"qwen[a-z0-9._-]*", re.IGNORECASE)
@@ -15,17 +15,6 @@ class ModelProvider(str, Enum):
     """Model transport supported by this application."""
 
     QWEN_OPENAI_COMPATIBLE = "qwen_openai_compatible"
-
-
-class MCPConfig(BaseModel):
-    """Deprecated legacy MCP configuration; not exposed to research agents."""
-    
-    # The URL of the MCP server
-    url: Optional[str] = Field(default=None)
-    # The tools to make available to the LLM
-    tools: Optional[list[str]] = Field(default=None)
-    # Whether the MCP server requires authentication
-    auth_required: Optional[bool] = Field(default=False)
 
 
 BAILIAN_WEB_SEARCH_MCP_URL = (
@@ -85,7 +74,9 @@ class BailianWebSearchConfig(BaseModel):
 
 class Configuration(BaseModel):
     """Main configuration class for the Deep Research agent."""
-    
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     # General Configuration
     max_structured_output_retries: int = Field(default=3)
     allow_clarification: bool = Field(default=True)
@@ -107,11 +98,6 @@ class Configuration(BaseModel):
 
     # Bailian is the only MCP integration exposed during Milestone 3.
     bailian_web_search: Optional[BailianWebSearchConfig] = Field(default=None)
-
-    # Deprecated legacy MCP configuration retained for config-file compatibility.
-    # It is intentionally not loaded by ``get_all_tools``.
-    mcp_config: Optional[MCPConfig] = Field(default=None)
-    mcp_prompt: Optional[str] = Field(default=None)
 
     @field_validator("qwen_base_url")
     @classmethod
@@ -168,8 +154,3 @@ class Configuration(BaseModel):
             for field_name in field_names
         }
         return cls(**{k: v for k, v in values.items() if v is not None})
-
-    class Config:
-        """Pydantic configuration."""
-        
-        arbitrary_types_allowed = True

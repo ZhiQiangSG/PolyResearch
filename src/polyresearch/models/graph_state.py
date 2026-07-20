@@ -18,6 +18,7 @@ from polyresearch.models.evidence import (
     Claim,
     EvidencePassage,
     SourceRecord,
+    ReportQaIssue,
     VerificationResult,
 )
 from polyresearch.models.research_run import LanguageExpansionDecision, ResearchPlan
@@ -57,6 +58,7 @@ class AgentState(MessagesState):
     passages: Annotated[list[EvidencePassage], merge_evidence_by_id]
     claims: Annotated[list[Claim], merge_evidence_by_id]
     verification_results: Annotated[list[VerificationResult], merge_evidence_by_id]
+    report_qa_issues: list[ReportQaIssue]
     final_report: str
 
 

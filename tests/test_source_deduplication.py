@@ -1,6 +1,6 @@
 import unittest
 
-from polyresearch.deduplication import deduplicate_source_artifacts
+from polyresearch.retrieval.deduplication import deduplicate_source_artifacts
 from polyresearch.models import EvidencePassage, SourceRecord, SourceVersion
 
 

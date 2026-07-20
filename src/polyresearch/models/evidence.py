@@ -309,6 +309,21 @@ class VerificationResult(BaseModel):
     evidence_link_ids: list[UUID] = Field(default_factory=list)
 
 
+class VerificationDraft(BaseModel):
+    """Model judgement before it is bound to existing evidence links."""
+
+    claim_id: UUID
+    status: VerificationStatus
+    confidence: float = Field(ge=0, le=1)
+    rationale: str = Field(min_length=1)
+
+
+class ClaimVerificationResult(BaseModel):
+    """Structured verification output for a batch of persisted claims."""
+
+    results: list[VerificationDraft] = Field(default_factory=list)
+
+
 class ReportStatement(BaseModel):
     """A rendered factual report statement linked to verified claims."""
 

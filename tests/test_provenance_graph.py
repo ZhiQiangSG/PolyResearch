@@ -19,7 +19,7 @@ from polyresearch.models import (
     VerificationResult,
     VerificationStatus,
 )
-from polyresearch.provenance_graph import (
+from polyresearch.evidence.provenance_graph import (
     build_provenance_graph,
     diagnose_incomplete_report_provenance,
     trace_report_statements_to_discovery,

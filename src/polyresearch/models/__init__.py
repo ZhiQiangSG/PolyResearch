@@ -10,6 +10,7 @@ from polyresearch.models.graph_state import (
 )
 from polyresearch.models.evidence import (
     Claim,
+    ClaimVerificationResult,
     ClaimDate,
     ClaimEntity,
     ClaimExtractionResult,
@@ -33,6 +34,7 @@ from polyresearch.models.evidence import (
     TranslationRecord,
     TranslationDraft,
     VerificationResult,
+    VerificationDraft,
     VerificationStatus,
 )
 from polyresearch.models.structured_outputs import (
@@ -67,6 +69,7 @@ __all__ = [
     "AtomicSubquestion",
     "AgentState",
     "Claim",
+    "ClaimVerificationResult",
     "ClaimDate",
     "ClaimEntity",
     "ClaimExtractionResult",
@@ -109,6 +112,7 @@ __all__ = [
     "SourceVersion",
     "SupervisorState",
     "VerificationResult",
+    "VerificationDraft",
     "VerificationStatus",
     "TranslationRecord",
     "TranslationDraft",

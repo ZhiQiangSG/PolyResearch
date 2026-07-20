@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from langchain_core.messages import HumanMessage
 
-from polyresearch import utils
+from polyresearch.retrieval import search_utils as utils
 from polyresearch.models import (
     Claim,
     ClaimExtractionDraft,
@@ -18,7 +18,9 @@ from polyresearch.models import (
 )
 from polyresearch.repositories import SqliteEvidenceRepository
 
-graph_module = importlib.import_module("polyresearch.graph")
+orchestrator_module = importlib.import_module("polyresearch.workflows.orchestrator")
+researcher_module = importlib.import_module("polyresearch.workflows.researcher")
+report_module = importlib.import_module("polyresearch.workflows.report_generator")
 
 
 class _ClaimExtractorStub:
@@ -89,7 +91,7 @@ class EndToEndEvidenceFlowTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         original_search = utils.tavily_search_async
-        original_factory = graph_module.create_qwen_chat_model
+        original_factory = researcher_module.create_qwen_chat_model
         utils.tavily_search_async = fake_search
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "research.db"
@@ -103,7 +105,7 @@ class EndToEndEvidenceFlowTests(unittest.IsolatedAsyncioTestCase):
                 }
             }
             try:
-                await graph_module.initialize_research_run(
+                await orchestrator_module.initialize_research_run(
                     {"messages": [HumanMessage(content="What changed in the policy?")]},
                     config,
                 )
@@ -117,15 +119,15 @@ class EndToEndEvidenceFlowTests(unittest.IsolatedAsyncioTestCase):
                     extraction_confidence=0.9,
                 )
 
-                graph_module.create_qwen_chat_model = (
+                researcher_module.create_qwen_chat_model = (
                     lambda *args, **kwargs: _ClaimExtractorStub(claim)
                 )
-                await graph_module.extract_claims({}, config)
+                await researcher_module.extract_claims({}, config)
 
-                graph_module.create_qwen_chat_model = (
+                report_module.create_qwen_chat_model = (
                     lambda *args, **kwargs: _ReportWriterStub(claim.id)
                 )
-                report_result = await graph_module.final_report_generation(
+                report_result = await report_module.final_report_generation(
                     {
                         "messages": [HumanMessage(content="What changed in the policy?")],
                         "research_brief": "What changed in the policy?",
@@ -162,6 +164,7 @@ class EndToEndEvidenceFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(passages[0].source_id, sources[0].id)
                 self.assertIn(f"[P:{passages[0].id}]", bundles[0].markdown or "")
             finally:
-                graph_module.create_qwen_chat_model = original_factory
+                researcher_module.create_qwen_chat_model = original_factory
+                report_module.create_qwen_chat_model = original_factory
                 utils.tavily_search_async = original_search
                 repository.close()

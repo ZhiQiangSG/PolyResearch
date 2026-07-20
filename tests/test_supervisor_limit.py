@@ -3,12 +3,45 @@ import unittest
 
 from langchain_core.messages import AIMessage
 
-graph_module = importlib.import_module("polyresearch.graph")
+supervisor_module = importlib.import_module("polyresearch.workflows.supervisor")
+researcher_module = importlib.import_module("polyresearch.workflows.researcher")
 
 
 class SupervisorLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unknown_researcher_tool_returns_a_recoverable_tool_message(self) -> None:
+        original_get_all_tools = researcher_module.get_all_tools
+        researcher_module.get_all_tools = lambda config: _empty_tool_list()
+        try:
+            command = await researcher_module.researcher_tools(
+                {
+                    "researcher_messages": [
+                        AIMessage(
+                            content="Call an unavailable tool.",
+                            tool_calls=[
+                                {
+                                    "name": "unknown_tool",
+                                    "args": {},
+                                    "id": "call-unknown",
+                                }
+                            ],
+                        )
+                    ],
+                    "tool_call_iterations": 0,
+                },
+                {"configurable": {}},
+            )
+
+            self.assertEqual(command.goto, "researcher")
+            self.assertEqual(len(command.update["researcher_messages"]), 1)
+            self.assertIn(
+                "'unknown_tool' is unavailable",
+                command.update["researcher_messages"][0].content,
+            )
+        finally:
+            researcher_module.get_all_tools = original_get_all_tools
+
     async def test_stops_when_iteration_count_reaches_configured_limit(self) -> None:
-        command = await graph_module.supervisor_tools(
+        command = await supervisor_module.supervisor_tools(
             {
                 "supervisor_messages": [
                     AIMessage(
@@ -44,10 +77,10 @@ class SupervisorLimitTests(unittest.IsolatedAsyncioTestCase):
                 }
 
         fake_subgraph = FakeResearcherSubgraph()
-        original_subgraph = graph_module.researcher_subgraph
-        graph_module.researcher_subgraph = fake_subgraph
+        original_subgraph = supervisor_module.researcher_subgraph
+        supervisor_module.researcher_subgraph = fake_subgraph
         try:
-            await graph_module.supervisor_tools(
+            await supervisor_module.supervisor_tools(
                 {
                     "supervisor_messages": [
                         AIMessage(
@@ -74,4 +107,8 @@ class SupervisorLimitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(fake_subgraph.unit_ids), 2)
             self.assertEqual(len(set(fake_subgraph.unit_ids)), 2)
         finally:
-            graph_module.researcher_subgraph = original_subgraph
+            supervisor_module.researcher_subgraph = original_subgraph
+
+
+async def _empty_tool_list():
+    return []

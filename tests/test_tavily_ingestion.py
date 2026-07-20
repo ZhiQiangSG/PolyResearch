@@ -14,16 +14,17 @@ from polyresearch.models import (
     ResearchRun,
 )
 from polyresearch.repositories import SqliteEvidenceRepository
-from polyresearch import utils
+from polyresearch.retrieval import mcp_utils, search_utils as utils
+from polyresearch.runtime import tool_registry
 from polyresearch.configuration import Configuration
-from polyresearch.search_providers import (
+from polyresearch.retrieval.search_providers import (
     BailianWebSearchProvider,
     SearchProviderRouter,
     SearchRequest,
     TavilySearchProvider,
     planned_web_search,
 )
-from polyresearch.graph import _persist_non_tavily_tool_outputs
+from polyresearch.nodes.provenance import persist_non_tavily_tool_outputs as _persist_non_tavily_tool_outputs
 
 
 def _routing_plan() -> ResearchPlan:
@@ -81,7 +82,7 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_planned_search_is_available_without_bailian(self) -> None:
-        tools = await utils.get_all_tools({"configurable": {}})
+        tools = await tool_registry.get_all_tools({"configurable": {}})
         self.assertIn("planned_web_search", [tool.name for tool in tools])
 
     def test_router_selects_bailian_for_chinese_and_tavily_otherwise(self) -> None:
@@ -187,9 +188,9 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                 return [fake_bailian_tool]
 
         original_tavily_search = utils.tavily_search_async
-        original_mcp_client = utils.MultiServerMCPClient
+        original_mcp_client = mcp_utils.MultiServerMCPClient
         utils.tavily_search_async = fake_tavily_search
-        utils.MultiServerMCPClient = FakeMcpClient
+        mcp_utils.MultiServerMCPClient = FakeMcpClient
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")
             run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
@@ -233,7 +234,7 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 repository.close()
                 utils.tavily_search_async = original_tavily_search
-                utils.MultiServerMCPClient = original_mcp_client
+                mcp_utils.MultiServerMCPClient = original_mcp_client
 
     async def test_bailian_loads_only_allowlisted_web_search_tool(self) -> None:
         captured_config = None
@@ -249,18 +250,14 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                     SimpleNamespace(name="unrelated_remote_tool"),
                 ]
 
-        original_client = utils.MultiServerMCPClient
-        utils.MultiServerMCPClient = FakeMcpClient
+        original_client = mcp_utils.MultiServerMCPClient
+        mcp_utils.MultiServerMCPClient = FakeMcpClient
         try:
-            tools = await utils.load_bailian_web_search_tool(
+            tools = await mcp_utils.load_bailian_web_search_tool(
                 {
                     "configurable": {
                         "bailian_web_search": {
                             "authentication": {"api_key": "test-key"}
-                        },
-                        "mcp_config": {
-                            "url": "https://untrusted.example",
-                            "tools": ["unrelated_remote_tool"],
                         },
                     }
                 },
@@ -273,7 +270,7 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                 {"Authorization": "Bearer test-key"},
             )
         finally:
-            utils.MultiServerMCPClient = original_client
+            mcp_utils.MultiServerMCPClient = original_client
     async def test_search_persists_evidence_before_returning_typed_payload(self) -> None:
         async def fake_search(*args, **kwargs):
             return [

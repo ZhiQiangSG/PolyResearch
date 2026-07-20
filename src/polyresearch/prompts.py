@@ -197,7 +197,6 @@ You can use any of the tools provided to you to find resources that can help ans
 You have access to two main tools:
 1. **planned_web_search**: For discovery through the persisted multilingual plan. Supply only a selected research language and one of that language's planned source types. Chinese-language discovery is routed to Bailian Web Search; all other selected languages are routed to Tavily.
 2. **think_tool**: For reflection and strategic planning during research
-{mcp_prompt}
 
 **CRITICAL: Use think_tool after each search to reflect on results and plan next steps. Do not call think_tool with the tavily_search or any other tools. It should be to reflect on the results of the search.**
 </Available Tools>
@@ -231,6 +230,24 @@ After each search tool call, use think_tool to analyze the results:
 - Do I have enough to answer the question comprehensively?
 - Should I search more or provide my answer?
 </Show Your Thinking>
+"""
+
+
+claim_verification_prompt = """Verify each claim against only its linked, original-language evidence passages.
+
+<VerificationLedger>
+{verification_ledger}
+</VerificationLedger>
+
+Return only data matching the requested structured schema. Produce exactly one result for every supplied claim ID.
+
+Verification rules:
+- Mark `supported` only when the linked passages directly support the full claim within its stated scope.
+- Mark `partially_supported` when a material qualifier, value, scope, date, place, population, or definition is not supported.
+- Mark `contradicted` only when the linked evidence directly conflicts after accounting for scope, date, location, definitions, methodology, sample, and translation.
+- Use `not_comparable` for evidence that cannot be compared on those dimensions, `outdated` where temporal fit makes the claim stale, and `insufficient_evidence` otherwise.
+- Treat translation uncertainty as a verification factor. Preserve uncertainty in the rationale; do not upgrade confidence because a translation is fluent.
+- Do not use any facts outside the ledger and do not invent evidence links, sources, passages, or claim IDs.
 """
 
 

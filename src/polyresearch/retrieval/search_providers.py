@@ -47,7 +47,7 @@ class TavilySearchProvider:
         fallback_from: str | None = None,
     ) -> str:
         # Import lazily to keep the provider module independent of tool setup.
-        from polyresearch.utils import tavily_search
+        from polyresearch.retrieval.search_utils import tavily_search
 
         return await tavily_search.coroutine(
             [request.query],
@@ -68,7 +68,8 @@ class BailianWebSearchProvider:
     name = "bailian_web_search"
 
     async def search(self, request: SearchRequest, config: RunnableConfig) -> str:
-        from polyresearch.utils import load_bailian_web_search_tool, select_citable_passages
+        from polyresearch.retrieval.mcp_utils import load_bailian_web_search_tool
+        from polyresearch.retrieval.search_utils import select_citable_passages
 
         tools = await load_bailian_web_search_tool(config, existing_tool_names=set())
         if len(tools) != 1:
@@ -181,14 +182,14 @@ async def _persist_bailian_ingestion(
     )
 
     # Reuse the same URL and passage semantics as the direct Tavily path.
-    from polyresearch.utils import (
+    from polyresearch.retrieval.search_utils import (
         _chunk_evidence_passages,
         _deduplicate_source_artifacts,
         _redirect_chain,
         canonicalize_url,
     )
-    from polyresearch.source_ingestion import extract_document, languages_match
-    from polyresearch.source_quality import score_initial_source_quality
+    from polyresearch.retrieval.source_ingestion import extract_document, languages_match
+    from polyresearch.retrieval.source_quality import score_initial_source_quality
 
     sources: list[SourceRecord] = []
     source_versions: list[SourceVersion] = []

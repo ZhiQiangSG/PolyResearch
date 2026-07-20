@@ -1,8 +1,8 @@
 import unittest
 
 from polyresearch.models import SourceRecord
-from polyresearch.source_ingestion import detect_language, extract_document, languages_match
-from polyresearch.utils import _chunk_evidence_passages, select_citable_passages
+from polyresearch.retrieval.source_ingestion import detect_language, extract_document, languages_match
+from polyresearch.retrieval.search_utils import _chunk_evidence_passages, select_citable_passages
 
 
 class SourceIngestionTests(unittest.TestCase):

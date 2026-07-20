@@ -18,7 +18,7 @@ from polyresearch.models import (
 )
 from polyresearch.repositories import SqliteEvidenceRepository
 
-graph_module = importlib.import_module("polyresearch.graph")
+graph_module = importlib.import_module("polyresearch.workflows.orchestrator")
 
 
 def _selection_assessment() -> LanguageSelectionAssessment:

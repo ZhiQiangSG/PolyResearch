@@ -137,7 +137,7 @@ async def build_report_trace_inspection(
     repository, run_id: UUID, report_statement_id: UUID
 ) -> dict:
     """Build a read-only complete-trace and diagnostic view for one statement."""
-    from polyresearch.provenance_graph import (
+    from polyresearch.evidence.provenance_graph import (
         build_provenance_graph,
         diagnose_incomplete_report_provenance,
         trace_report_statements_to_discovery,

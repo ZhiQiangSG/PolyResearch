@@ -8,17 +8,22 @@ from polyresearch.models import (
     Claim,
     ClaimExtractionDraft,
     ClaimExtractionResult,
+    ClaimVerificationResult,
     ClaimScope,
+    EvidenceLink,
     EvidencePassage,
+    QueryRecord,
     ReportDraft,
     ReportStatementDraft,
     ResearchRun,
     SourceRecord,
     TranslationDraft,
+    VerificationStatus,
 )
 from polyresearch.repositories import SqliteEvidenceRepository
 
-graph_module = importlib.import_module("polyresearch.graph")
+researcher_module = importlib.import_module("polyresearch.workflows.researcher")
+report_module = importlib.import_module("polyresearch.workflows.report_generator")
 
 
 class _ClaimExtractorStub:
@@ -75,6 +80,37 @@ class _TranslationStub:
         return TranslationDraft(translated_text="The policy changed.", confidence=0.9)
 
 
+class _VerificationStub:
+    def with_structured_output(self, schema):
+        return self
+
+    def with_retry(self, **kwargs):
+        return self
+
+    async def ainvoke(self, messages):
+        ledger = messages[0].content
+        claim_id = next(
+            claim_id
+            for claim_id in [self.claim_id]
+            if str(claim_id) in ledger
+        )
+        return ClaimVerificationResult.model_validate(
+            {
+                "results": [
+                    {
+                        "claim_id": str(claim_id),
+                        "status": "supported",
+                        "confidence": 0.95,
+                        "rationale": "The cited passage directly states the claim.",
+                    }
+                ]
+            }
+        )
+
+    def __init__(self, claim_id):
+        self.claim_id = claim_id
+
+
 class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_translates_only_claim_evidence_needed_for_output_language(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -92,14 +128,14 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 evidence_passage_ids=[passage.id],
                 extraction_confidence=0.9,
             )
-            original_factory = graph_module.create_qwen_chat_model
-            graph_module.create_qwen_chat_model = lambda *args, **kwargs: _TranslationStub()
+            original_factory = researcher_module.create_qwen_chat_model
+            researcher_module.create_qwen_chat_model = lambda *args, **kwargs: _TranslationStub()
             try:
                 await repository.create_run(run)
                 await repository.append_sources(run.id, [source])
                 await repository.append_passages(run.id, [passage])
                 await repository.append_claims(run.id, [claim])
-                await graph_module.translate_claim_evidence(
+                await researcher_module.translate_claim_evidence(
                     {},
                     {"configurable": {
                         "run_id": str(run.id),
@@ -113,7 +149,7 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(translations[0].source_original_text_hash, passage.original_text_hash)
                 self.assertEqual(translations[0].target_language, "en")
             finally:
-                graph_module.create_qwen_chat_model = original_factory
+                researcher_module.create_qwen_chat_model = original_factory
                 repository.close()
     async def test_claim_extraction_reads_and_writes_the_durable_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -136,14 +172,14 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 extraction_confidence=0.9,
             )
             extractor = _ClaimExtractorStub(claim)
-            original_factory = graph_module.create_qwen_chat_model
-            graph_module.create_qwen_chat_model = lambda *args, **kwargs: extractor
+            original_factory = researcher_module.create_qwen_chat_model
+            researcher_module.create_qwen_chat_model = lambda *args, **kwargs: extractor
             try:
                 await repository.create_run(run)
                 await repository.append_sources(run.id, [source])
                 await repository.append_passages(run.id, [passage])
 
-                result = await graph_module.extract_claims(
+                result = await researcher_module.extract_claims(
                     {},
                     {
                         "configurable": {
@@ -166,7 +202,53 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("EvidenceLedger", extractor.messages[1].content)
                 self.assertNotIn("ToolMessage", extractor.messages[1].content)
             finally:
-                graph_module.create_qwen_chat_model = original_factory
+                researcher_module.create_qwen_chat_model = original_factory
+                repository.close()
+
+    async def test_claim_verification_persists_typed_results(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
+            source = SourceRecord(canonical_url="https://example.test/policy", title="Policy")
+            passage = EvidencePassage(
+                source_id=source.id,
+                text="The policy changed on 1 January.",
+                locator="paragraph-1",
+            )
+            claim = Claim(
+                statement="The policy changed on 1 January.",
+                evidence_passage_ids=[passage.id],
+                extraction_confidence=0.9,
+            )
+            original_factory = researcher_module.create_qwen_chat_model
+            researcher_module.create_qwen_chat_model = lambda *args, **kwargs: _VerificationStub(claim.id)
+            try:
+                await repository.create_run(run)
+                await repository.append_sources(run.id, [source])
+                await repository.append_passages(run.id, [passage])
+                await repository.append_claims(run.id, [claim])
+                await repository.append_evidence_links(
+                    run.id,
+                    [
+                        EvidenceLink(
+                            claim_id=claim.id,
+                            passage_id=passage.id,
+                            relationship="supports",
+                        )
+                    ],
+                )
+
+                result = await researcher_module.verify_claims(
+                    {}, {"configurable": {"run_id": str(run.id), "evidence_repository": repository}}
+                )
+
+                persisted = await repository.list_verification_results(run.id)
+                self.assertEqual(len(persisted), 1)
+                self.assertEqual(persisted[0].claim_id, claim.id)
+                self.assertEqual(persisted[0].status, VerificationStatus.SUPPORTED)
+                self.assertEqual(result["verification_results"], persisted)
+            finally:
+                researcher_module.create_qwen_chat_model = original_factory
                 repository.close()
 
     async def test_report_generation_persists_statement_and_bundle(self) -> None:
@@ -199,15 +281,27 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                     ],
                 )
             )
-            original_factory = graph_module.create_qwen_chat_model
-            graph_module.create_qwen_chat_model = lambda *args, **kwargs: writer
+            original_factory = report_module.create_qwen_chat_model
+            report_module.create_qwen_chat_model = lambda *args, **kwargs: writer
             try:
                 await repository.create_run(run)
                 await repository.append_sources(run.id, [source])
                 await repository.append_passages(run.id, [passage])
                 await repository.append_claims(run.id, [claim])
+                await repository.append_query_records(
+                    run.id,
+                    [
+                        QueryRecord(
+                            run_id=run.id,
+                            query=run.question,
+                            language="en",
+                            provider="tavily",
+                            result_url=source.canonical_url,
+                        )
+                    ],
+                )
 
-                result = await graph_module.final_report_generation(
+                result = await report_module.final_report_generation(
                     {"messages": [], "research_brief": run.question},
                     {
                         "configurable": {
@@ -230,7 +324,7 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                     "wording_exceeds_verification_status",
                 )
             finally:
-                graph_module.create_qwen_chat_model = original_factory
+                report_module.create_qwen_chat_model = original_factory
                 repository.close()
 
     async def test_claim_extraction_isolated_to_its_research_unit(self) -> None:
@@ -262,14 +356,14 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 extraction_confidence=0.9,
             )
             extractor = _ClaimExtractorStub(claim_a)
-            original_factory = graph_module.create_qwen_chat_model
-            graph_module.create_qwen_chat_model = lambda *args, **kwargs: extractor
+            original_factory = researcher_module.create_qwen_chat_model
+            researcher_module.create_qwen_chat_model = lambda *args, **kwargs: extractor
             try:
                 await repository.create_run(run)
                 await repository.append_sources(run.id, [source_a, source_b])
                 await repository.append_passages(run.id, [passage_a, passage_b])
 
-                await graph_module.extract_claims(
+                await researcher_module.extract_claims(
                     {},
                     {
                         "configurable": {
@@ -287,5 +381,5 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                     [claim.id for claim in await repository.list_claims(run.id)], [claim_a.id]
                 )
             finally:
-                graph_module.create_qwen_chat_model = original_factory
+                researcher_module.create_qwen_chat_model = original_factory
                 repository.close()

@@ -5,6 +5,7 @@ import re
 from polyresearch.models import (
     Claim,
     EvidencePassage,
+    QueryRecord,
     ReportQaIssue,
     ReportStatement,
     SourceRecord,
@@ -24,11 +25,19 @@ def validate_report_statements(
     claims: list[Claim],
     passages: list[EvidencePassage],
     sources: list[SourceRecord],
+    queries: list[QueryRecord] | None = None,
 ) -> list[ReportQaIssue]:
     """Return blocking integrity errors and conservative wording warnings."""
     claim_ids = {claim.id for claim in claims}
+    claims_by_id = {claim.id: claim for claim in claims}
     passages_by_id = {passage.id: passage for passage in passages}
+    sources_by_id = {source.id: source for source in sources}
     source_ids = {source.id for source in sources}
+    query_urls = (
+        {query.result_url for query in queries if query.result_url}
+        if queries is not None
+        else None
+    )
     issues: list[ReportQaIssue] = []
     for statement in statements:
         unknown_claims = set(statement.claim_ids) - claim_ids
@@ -68,6 +77,29 @@ def validate_report_statements(
                         severity="error",
                         statement_id=statement.id,
                         message=f"Citation {citation_id} resolves to a passage without a source.",
+                    )
+                )
+        if query_urls is not None:
+            has_discovery_trace = any(
+                (
+                    source := sources_by_id.get(passages_by_id[passage_id].source_id)
+                )
+                and {source.canonical_url, source.discovered_url} & query_urls
+                for claim_id in statement.claim_ids
+                if (claim := claims_by_id.get(claim_id))
+                for passage_id in claim.evidence_passage_ids
+                if passage_id in passages_by_id
+            )
+            if not has_discovery_trace:
+                issues.append(
+                    ReportQaIssue(
+                        code="incomplete_discovery_trace",
+                        severity="error",
+                        statement_id=statement.id,
+                        message=(
+                            "Statement lacks a claim → passage → source → query "
+                            "discovery trace."
+                        ),
                     )
                 )
         if statement.verification_status in {

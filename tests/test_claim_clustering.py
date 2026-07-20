@@ -1,7 +1,7 @@
 import unittest
 from uuid import uuid4
 
-from polyresearch.claim_clustering import cluster_claims
+from polyresearch.evidence.claim_clustering import cluster_claims
 from polyresearch.models import Claim
 
 

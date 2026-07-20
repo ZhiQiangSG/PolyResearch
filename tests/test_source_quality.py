@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timezone
 
 from polyresearch.models import SourceRecord
-from polyresearch.source_quality import score_initial_source_quality
+from polyresearch.retrieval.source_quality import score_initial_source_quality
 
 
 class SourceQualityTests(unittest.TestCase):

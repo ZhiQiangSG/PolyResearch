@@ -2,7 +2,7 @@ import unittest
 from uuid import uuid4
 
 from polyresearch.models import Claim, ClaimDate, ClaimQuantity
-from polyresearch.value_normalization import normalize_claim_values
+from polyresearch.evidence.value_normalization import normalize_claim_values
 
 
 class ValueNormalizationTests(unittest.TestCase):

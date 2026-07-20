@@ -1,7 +1,7 @@
 import unittest
 from uuid import uuid4
 
-from polyresearch.entity_resolution import resolve_claim_entities
+from polyresearch.evidence.entity_resolution import resolve_claim_entities
 from polyresearch.models import Claim, ClaimEntity
 
 
