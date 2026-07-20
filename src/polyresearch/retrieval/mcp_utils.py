@@ -1,6 +1,7 @@
 """Allowlisted Bailian MCP tool loading."""
 
 import asyncio
+import logging
 import os
 
 from langchain_core.runnables import RunnableConfig
@@ -8,6 +9,10 @@ from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from polyresearch.configuration import Configuration
+from polyresearch.security import redacted_exception_info
+
+logger = logging.getLogger(__name__)
+
 
 async def load_bailian_web_search_tool(
     config: RunnableConfig,
@@ -40,7 +45,16 @@ async def load_bailian_web_search_tool(
         available_tools = await asyncio.wait_for(
             client.get_tools(), timeout=bailian.timeout_seconds
         )
-    except Exception:
+    except Exception as error:
+        logger.warning(
+            "Bailian MCP tool loading failed",
+            extra={
+                "operation": "load_mcp_tools",
+                "provider": "bailian_web_search",
+                "endpoint": bailian.server_url,
+            },
+            exc_info=redacted_exception_info(error),
+        )
         return []
 
     # Never expose an arbitrary server tool, even if the server advertises it.
@@ -49,5 +63,3 @@ async def load_bailian_web_search_tool(
         for mcp_tool in available_tools
         if mcp_tool.name == bailian.tool_name
     ]
-
-

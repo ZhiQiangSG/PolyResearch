@@ -1,6 +1,7 @@
 """Supervisor subgraph for delegating research units."""
 
 import asyncio
+import logging
 from typing import Literal, cast
 from uuid import uuid4
 
@@ -16,6 +17,10 @@ from polyresearch.nodes.provenance import researcher_evidence_summary as _resear
 from polyresearch.workflows.researcher import researcher_subgraph
 from polyresearch.runtime.model_utils import create_qwen_chat_model
 from polyresearch.runtime.tool_registry import think_tool
+from polyresearch.security import redacted_exception_info
+
+logger = logging.getLogger(__name__)
+
 
 async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[Literal["supervisor_tools"]]:
     """Lead research supervisor that plans research strategy and delegates to researchers.
@@ -191,6 +196,11 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                     update_payload[field] = artifacts
                 
         except Exception as e:
+            logger.warning(
+                "Parallel research delegation failed",
+                extra={"operation": "delegate_research_units", "research_unit_count": len(research_tasks)},
+                exc_info=redacted_exception_info(e),
+            )
             raise RuntimeError("Failed to orchestrate parallel research tasks") from e
     
     # Step 3: Return command with all tool results

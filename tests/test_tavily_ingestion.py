@@ -1,8 +1,11 @@
+import asyncio
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 from polyresearch.models import (
@@ -24,6 +27,7 @@ from polyresearch.retrieval.search_providers import (
     TavilySearchProvider,
     planned_web_search,
 )
+from polyresearch.retrieval import search_providers
 from polyresearch.nodes.provenance import persist_non_tavily_tool_outputs as _persist_non_tavily_tool_outputs
 
 
@@ -72,6 +76,133 @@ def _routing_plan() -> ResearchPlan:
 
 
 class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chinese_route_uses_environment_activated_bailian_before_tavily(self) -> None:
+        calls: list[str] = []
+
+        class FakeBailianTool:
+            name = "web_search"
+
+            async def ainvoke(self, arguments, config=None):
+                calls.append("bailian")
+                return '{"results": []}'
+
+        async def fake_loader(config, existing_tool_names):
+            calls.append("load_bailian")
+            return [FakeBailianTool()]
+
+        async def fake_persist(request, config, result):
+            return [], []
+
+        async def fake_tavily_search(self, request, config, *, fallback_from=None):
+            calls.append("tavily")
+            return "unexpected fallback"
+
+        original_loader = mcp_utils.load_bailian_web_search_tool
+        original_persist = search_providers._persist_bailian_ingestion
+        original_tavily_search = TavilySearchProvider.search
+        try:
+            mcp_utils.load_bailian_web_search_tool = fake_loader
+            search_providers._persist_bailian_ingestion = fake_persist
+            TavilySearchProvider.search = fake_tavily_search
+            with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+                result = await SearchProviderRouter().search(
+                    SearchRequest("政策", "zh", "official"),
+                    _routing_plan(),
+                    {"configurable": {}},
+                )
+            self.assertIn("polyresearch_evidence", result)
+            self.assertEqual(calls, ["load_bailian", "bailian"])
+        finally:
+            mcp_utils.load_bailian_web_search_tool = original_loader
+            search_providers._persist_bailian_ingestion = original_persist
+            TavilySearchProvider.search = original_tavily_search
+
+    def test_bailian_limiter_key_is_endpoint_and_credential_scoped(self) -> None:
+        first = Configuration(
+            bailian_web_search={"authentication": {"api_key": "account-one"}}
+        ).bailian_web_search
+        same_account = Configuration(
+            bailian_web_search={"authentication": {"api_key": "account-one"}}
+        ).bailian_web_search
+        other_account = Configuration(
+            bailian_web_search={"authentication": {"api_key": "account-two"}}
+        ).bailian_web_search
+
+        assert first is not None and same_account is not None and other_account is not None
+        first_key = search_providers._bailian_limiter_key(first)
+        self.assertEqual(first_key, search_providers._bailian_limiter_key(same_account))
+        self.assertNotEqual(first_key, search_providers._bailian_limiter_key(other_account))
+        self.assertNotIn("account-one", first_key)
+
+    async def test_concurrent_bailian_searches_are_rate_limited_across_runs(self) -> None:
+        class _Clock:
+            now = 0.0
+
+        clock = _Clock()
+        call_times: list[float] = []
+        sleep_intervals: list[float] = []
+
+        async def fake_sleep(interval: float) -> None:
+            sleep_intervals.append(interval)
+            clock.now += interval
+            await asyncio.sleep(0)
+
+        class FakeBailianTool:
+            name = "web_search"
+
+            async def ainvoke(self, arguments, config=None):
+                call_times.append(clock.now)
+                return '{"results": []}'
+
+        async def fake_loader(config, existing_tool_names):
+            return [FakeBailianTool()]
+
+        async def fake_persist(request, config, result):
+            return [], []
+
+        original_loader = mcp_utils.load_bailian_web_search_tool
+        original_persist = search_providers._persist_bailian_ingestion
+        original_reserve = search_providers._reserve_bailian_request_slot
+
+        async def reserve_with_fake_time(provider_key: str, interval: float) -> None:
+            await original_reserve(
+                provider_key, interval, clock=lambda: clock.now, sleep=fake_sleep
+            )
+
+        bailian_config = {
+            "authentication": {"api_key": "shared-account"},
+            "max_requests_per_second": 10,
+        }
+        configs = [
+            {"configurable": {"run_id": str(uuid4()), "bailian_web_search": bailian_config}}
+            for _ in range(3)
+        ]
+        configured_bailian = Configuration(
+            bailian_web_search=bailian_config
+        ).bailian_web_search
+        assert configured_bailian is not None
+        provider_key = search_providers._bailian_limiter_key(configured_bailian)
+        search_providers._BAILIAN_RATE_LIMITERS.pop(provider_key, None)
+        try:
+            mcp_utils.load_bailian_web_search_tool = fake_loader
+            search_providers._persist_bailian_ingestion = fake_persist
+            search_providers._reserve_bailian_request_slot = reserve_with_fake_time
+            await asyncio.gather(
+                *(
+                    BailianWebSearchProvider().search(
+                        SearchRequest(f"政策 {index}", "zh", "official"), config
+                    )
+                    for index, config in enumerate(configs)
+                )
+            )
+            self.assertEqual(call_times, [0.0, 0.1, 0.2])
+            self.assertEqual(sleep_intervals, [0.1, 0.1])
+        finally:
+            mcp_utils.load_bailian_web_search_tool = original_loader
+            search_providers._persist_bailian_ingestion = original_persist
+            search_providers._reserve_bailian_request_slot = original_reserve
+            search_providers._BAILIAN_RATE_LIMITERS.pop(provider_key, None)
+
     def test_bailian_configuration_rejects_non_allowlisted_tools(self) -> None:
         with self.assertRaises(ValueError):
             Configuration(

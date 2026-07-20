@@ -102,6 +102,10 @@ The analysis records the applicable dimensions and evidence. For a material unre
 
 Provider choice follows the planned language and source intent. Chinese-language queries selected for unique Chinese evidence route to the configured, allowlisted Alibaba Bailian Web Search MCP tool first; other research languages and bridge queries route to Tavily. Failures and fallbacks are retained in `QueryRecord`; the system must never silently claim equivalent coverage after substitution.
 
+### Bailian activation
+
+Set `DASHSCOPE_API_KEY` in the **process environment** to activate the default allowlisted Bailian Web Search configuration for CLI, graph, and API callers. A `.env` file is not loaded automatically; use your deployment launcher or shell to export it. Callers can explicitly supply `bailian_web_search` in the runtime configuration to override the endpoint, timeout, rate limit, or credentials; supplying `None` disables the environment-derived default.
+
 Search result snippets are discovery aids only. The system records inaccessible, blocked, unavailable, paywalled, or low-quality sources and does not imply their content was verified. The final report discloses material missing languages, inaccessible source categories, provider failures, retrieval-date limits, unresolved conflicts, and other uncertainty that could affect its findings.
 
 ## Retention, privacy, and redaction

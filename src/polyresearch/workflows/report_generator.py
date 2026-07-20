@@ -1,6 +1,8 @@
 """Report generation, QA, and rendering from typed evidence artifacts."""
 
+import hashlib
 import json
+import logging
 import re
 from html import escape
 from datetime import datetime, timezone
@@ -26,6 +28,10 @@ from polyresearch.nodes.provenance import (
 from polyresearch.prompts import report_outline_generation_prompt, report_prose_generation_prompt
 from polyresearch.evidence.report_qa import validate_report_statements
 from polyresearch.runtime.model_utils import create_qwen_chat_model, get_model_token_limit, is_token_limit_exceeded
+from polyresearch.security import redacted_exception_info
+
+logger = logging.getLogger(__name__)
+
 
 async def final_report_generation(state: AgentState, config: RunnableConfig):
     """Generate the final comprehensive research report with retry logic for token limits.
@@ -44,10 +50,19 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
     context, sources, passages, claims, evidence_links, verification_results = await _load_evidence_ledger(
         config
     )
+    evidence_fingerprint = _report_evidence_fingerprint(
+        claims=claims,
+        verification_results=verification_results,
+        sources=sources,
+    )
     existing_bundles = await context.repository.list_report_bundles(context.run_id)
     if existing_bundles:
         latest_bundle = max(existing_bundles, key=lambda item: (item.created_at, str(item.id)))
-        if latest_bundle.qa_passed and latest_bundle.markdown:
+        if (
+            latest_bundle.qa_passed
+            and latest_bundle.markdown
+            and latest_bundle.evidence_fingerprint == evidence_fingerprint
+        ):
             return {
                 "final_report": latest_bundle.markdown,
                 "unresolved_disagreements": latest_bundle.unresolved_disagreements,
@@ -211,6 +226,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 unresolved_disagreements=unresolved_disagreements,
                 qa_issues=qa_issues,
                 qa_passed=True,
+                evidence_fingerprint=evidence_fingerprint,
             )
             await context.repository.append_report_bundles(context.run_id, [bundle])
             
@@ -223,6 +239,15 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
             }
             
         except Exception as e:
+            logger.warning(
+                "Report generation attempt failed",
+                extra={
+                    "operation": "final_report_generation",
+                    "run_id": str(context.run_id),
+                    "attempt": current_retry + 1,
+                },
+                exc_info=redacted_exception_info(e),
+            )
             # Handle token limit exceeded errors with progressive truncation
             if is_token_limit_exceeded(e, configurable.final_report_model):
                 current_retry += 1
@@ -257,6 +282,34 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
         "final_report": "Error generating final report: Maximum retries exceeded",
         "messages": [AIMessage(content="Report generation failed after maximum retries")],
     }
+
+
+def _report_evidence_fingerprint(
+    *,
+    claims: list[Claim],
+    verification_results: list[VerificationResult],
+    sources: list[SourceRecord],
+) -> str:
+    """Return a deterministic identity for the report's mutable input ledger.
+
+    Report bundles are immutable output snapshots.  IDs are intentionally part of
+    the digest so newly appended evidence, including a later verification pass,
+    invalidates a previously QA-passed report instead of reusing stale prose.
+    """
+    payload = {
+        "claims": sorted(
+            (item.model_dump(mode="json") for item in claims), key=lambda item: item["id"]
+        ),
+        "verification_results": sorted(
+            (item.model_dump(mode="json") for item in verification_results),
+            key=lambda item: item["id"],
+        ),
+        "sources": sorted(
+            (item.model_dump(mode="json") for item in sources), key=lambda item: item["id"]
+        ),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _validate_outline_claim_ids(

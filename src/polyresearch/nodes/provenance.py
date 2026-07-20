@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 
 from langchain_core.runnables import RunnableConfig
 
@@ -14,6 +15,8 @@ from polyresearch.models import (
 from polyresearch.repositories import RunContext
 from polyresearch.security import redact_secrets
 
+logger = logging.getLogger(__name__)
+
 
 async def persist_non_tavily_tool_outputs(
     config: RunnableConfig, tool_calls: list[dict], observations: list[object]
@@ -22,6 +25,7 @@ async def persist_non_tavily_tool_outputs(
     try:
         context = RunContext.from_runnable_config(config)
     except ValueError:
+        logger.debug("Skipping non-Tavily output persistence without run context")
         return
 
     attachments = [

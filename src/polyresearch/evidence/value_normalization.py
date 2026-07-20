@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from polyresearch.models.evidence import Claim, ClaimDate, ClaimQuantity
+
+logger = logging.getLogger(__name__)
 
 
 _NUMBER = re.compile(r"(?<!\w)([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?!\w)")
@@ -29,6 +32,7 @@ def _decimal_string(value: str) -> str | None:
     try:
         number = Decimal(value.replace(",", ""))
     except InvalidOperation:
+        logger.debug("Retaining unparseable numeric value", extra={"operation": "normalize_decimal"})
         return None
     normalized = format(number.normalize(), "f")
     return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
@@ -78,11 +82,13 @@ def normalize_date(claim_date: ClaimDate) -> ClaimDate:
         try:
             normalized = date(year, month, day).isoformat()
         except ValueError:
+            logger.debug("Retaining invalid calendar date", extra={"operation": "normalize_date"})
             normalized = None
     else:
         try:
             normalized = date.fromisoformat(original).isoformat()
         except ValueError:
+            logger.debug("Retaining ambiguous or invalid date", extra={"operation": "normalize_date"})
             normalized = None
     if normalized is None:
         return claim_date.model_copy(update={

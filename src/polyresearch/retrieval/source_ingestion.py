@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import unescape
@@ -14,6 +15,8 @@ from urllib.parse import urljoin
 import aiohttp
 
 from polyresearch.runtime.retry import retry_async
+
+logger = logging.getLogger(__name__)
 
 
 _SPACE = re.compile(r"\s+")
@@ -112,6 +115,10 @@ def _parse_datetime(value: str | None) -> datetime | None:
         try:
             parsed = parsedate_to_datetime(value)
         except (TypeError, ValueError):
+            logger.debug(
+                "Unable to parse source timestamp",
+                extra={"operation": "parse_source_datetime"},
+            )
             return None
     return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc)
 

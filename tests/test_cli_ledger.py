@@ -24,7 +24,7 @@ from polyresearch.repositories import SqliteEvidenceRepository
 
 
 class LedgerInspectionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_exports_latest_bundle_as_markdown_html_and_json(self) -> None:
+    async def test_exports_latest_bundle_as_markdown_html_json_and_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")
             output_dir = Path(directory) / "exports"
@@ -40,16 +40,15 @@ class LedgerInspectionTests(unittest.IsolatedAsyncioTestCase):
                 await repository.append_report_bundles(run.id, [bundle])
 
                 exported = await export_report_bundle(
-                    repository, run.id, output_dir, {"markdown", "html", "json"}
+                    repository, run.id, output_dir, {"markdown", "html", "json", "pdf"}
                 )
 
-                self.assertEqual(set(exported), {"markdown", "html", "json"})
+                self.assertEqual(set(exported), {"markdown", "html", "json", "pdf"})
                 self.assertEqual(Path(exported["markdown"]).read_text(), bundle.markdown)
                 self.assertEqual(Path(exported["html"]).read_text(), bundle.html)
                 payload = json.loads(Path(exported["json"]).read_text())
                 self.assertEqual(payload["provenance_json"], bundle.provenance_json)
-                with self.assertRaisesRegex(ValueError, "PDF and DOCX"):
-                    await export_report_bundle(repository, run.id, output_dir, {"pdf"})
+                self.assertTrue(Path(exported["pdf"]).read_bytes().startswith(b"%PDF-"))
             finally:
                 repository.close()
 

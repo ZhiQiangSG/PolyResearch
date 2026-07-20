@@ -2,12 +2,29 @@
 
 import argparse
 import asyncio
+from html import escape
 import json
+import logging
 import os
+import re
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from langchain_core.messages import HumanMessage
+
+
+_LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+
+
+def configure_logging(level: str) -> None:
+    """Configure process logging for the CLI without affecting library imports."""
+    normalized_level = level.upper()
+    if normalized_level not in _LOG_LEVELS:
+        raise ValueError(f"Unsupported log level: {level}")
+    logging.basicConfig(
+        level=getattr(logging, normalized_level),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,17 +61,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--export",
         metavar="RUN_ID",
-        help="Export the latest ReportBundle for a run as Markdown, HTML, and/or JSON.",
+        help="Export the latest ReportBundle for a run as Markdown, HTML, JSON, and/or PDF.",
     )
     parser.add_argument(
         "--format",
         default="markdown,html,json",
-        help="Comma-separated export formats: markdown, html, json (default: all).",
+        help="Comma-separated export formats: markdown, html, json, pdf (default: all).",
     )
     parser.add_argument(
         "--output-dir",
         default=".",
         help="Directory for --export output files (default: current directory).",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=_LOG_LEVELS,
+        type=str.upper,
+        default=os.environ.get("POLYRESEARCH_LOG_LEVEL", "WARNING").upper(),
+        help="Logging verbosity (default: POLYRESEARCH_LOG_LEVEL or WARNING).",
     )
     return parser
 
@@ -200,14 +224,14 @@ async def inspect_report_trace(run_id: str, report_statement_id: str) -> str:
 async def export_report_bundle(
     repository, run_id: UUID, output_dir: Path, formats: set[str]
 ) -> dict[str, str]:
-    """Write the latest stable ReportBundle without introducing PDF/DOCX output."""
-    supported_formats = {"markdown", "html", "json"}
+    """Write the latest stable ReportBundle in the requested artifact formats."""
+    supported_formats = {"markdown", "html", "json", "pdf"}
     unsupported = formats - supported_formats
     if unsupported:
         raise ValueError(
             "Unsupported report export format(s): "
             + ", ".join(sorted(unsupported))
-            + ". PDF and DOCX exports are intentionally deferred until the evidence bundle is stable."
+            + ". Supported formats are markdown, html, json, and pdf."
         )
     if not formats:
         raise ValueError("At least one report export format is required.")
@@ -217,7 +241,7 @@ async def export_report_bundle(
     bundle = max(bundles, key=lambda item: (item.created_at, str(item.id)))
     output_dir.mkdir(parents=True, exist_ok=True)
     basename = f"polyresearch-report-{run_id}"
-    payloads = {
+    payloads: dict[str, tuple[str, str | bytes]] = {
         "markdown": (f"{basename}.md", bundle.markdown or ""),
         "html": (f"{basename}.html", bundle.html or ""),
         "json": (
@@ -225,6 +249,10 @@ async def export_report_bundle(
             json.dumps(bundle.model_dump(mode="json"), ensure_ascii=False, indent=2),
         ),
     }
+    if "pdf" in formats:
+        if not bundle.markdown:
+            raise ValueError("ReportBundle has no markdown representation to export as PDF.")
+        payloads["pdf"] = (f"{basename}.pdf", _render_markdown_pdf(bundle.markdown))
     missing = [format_name for format_name in formats if not payloads[format_name][1]]
     if missing:
         raise ValueError(
@@ -234,9 +262,60 @@ async def export_report_bundle(
     for format_name in sorted(formats):
         filename, content = payloads[format_name]
         target = output_dir / filename
-        target.write_text(content, encoding="utf-8")
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content, encoding="utf-8")
         exported[format_name] = str(target)
     return exported
+
+
+def _render_markdown_pdf(markdown: str) -> bytes:
+    """Render a readable, self-contained PDF from the stable Markdown report."""
+    try:
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import inch
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    except ImportError as error:  # pragma: no cover - environment configuration
+        raise RuntimeError("PDF export requires the reportlab package.") from error
+
+    from io import BytesIO
+
+    buffer = BytesIO()
+    # CID fonts keep original Chinese evidence passages legible in exported
+    # reports without requiring an operating-system font installation.
+    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle(
+        "ReportBody", parent=styles["BodyText"], fontName="STSong-Light", leading=15, spaceAfter=8,
+    )
+    heading = ParagraphStyle(
+        "ReportHeading", parent=styles["Heading2"], fontName="STSong-Light", spaceBefore=14, spaceAfter=8,
+    )
+    document = SimpleDocTemplate(
+        buffer, leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+        topMargin=0.75 * inch, bottomMargin=0.75 * inch,
+    )
+    story = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if not line:
+            story.append(Spacer(1, 4))
+            continue
+        if line.startswith("#"):
+            text = re.sub(r"^#+\s*", "", line)
+            story.append(Paragraph(escape(text), heading))
+        else:
+            # Keep an ASCII marker: the built-in CJK CID font maps a Unicode
+            # bullet inconsistently across PDF viewers.
+            text = re.sub(r"^[-*+]\s+", "- ", line)
+            story.append(Paragraph(escape(text), body))
+    if not story:
+        story.append(Paragraph("Report bundle is empty.", body))
+    document.build(story)
+    return buffer.getvalue()
 
 
 async def export_report(run_id: str, output_dir: str, formats: str) -> dict[str, str]:
@@ -261,6 +340,7 @@ def main() -> None:
     """Run the CLI, displaying help when no research question is provided."""
     parser = build_parser()
     args = parser.parse_args()
+    configure_logging(args.log_level)
     if args.export:
         try:
             result = asyncio.run(export_report(args.export, args.output_dir, args.format))

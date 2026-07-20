@@ -18,9 +18,11 @@ from polyresearch.models import EvidencePassage, ProvenanceAttachment, QueryReco
 from polyresearch.runtime.model_utils import get_tavily_api_key
 from polyresearch.configuration import Configuration
 from polyresearch.repositories import RunContext
-from polyresearch.security import is_allowed_domain, redact_secrets
+from polyresearch.security import is_allowed_domain, redacted_exception_info, redact_secrets
 from polyresearch.retrieval.source_ingestion import extract_document, fetch_source_content, languages_match
 from polyresearch.retrieval.source_quality import score_initial_source_quality
+
+logger = logging.getLogger(__name__)
 
 TAVILY_SEARCH_DESCRIPTION = (
     "A search engine optimized for comprehensive, accurate, and trusted results. "
@@ -111,6 +113,10 @@ async def tavily_search(
             try:
                 canonical_url = canonicalize_url(discovered_url)
             except ValueError:
+                logger.debug(
+                    "Skipping discovered result with invalid URL",
+                    extra={"operation": "canonicalize_discovered_url", "provider": "tavily", "query_language": query_language},
+                )
                 continue
             if not is_allowed_domain(
                 canonical_url,
@@ -150,8 +156,10 @@ async def tavily_search(
             try:
                 document = await fetch_source_content(result["canonical_url"])
             except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError) as error:
-                logging.getLogger(__name__).info(
-                    "Unable to fetch discovered source %s: %s", result["canonical_url"], error
+                logger.warning(
+                    "Unable to fetch Tavily-discovered source",
+                    extra={"operation": "fetch_source_content", "provider": "tavily", "query_language": query_language},
+                    exc_info=redacted_exception_info(error),
                 )
                 continue
             original_text = document.raw_content
@@ -166,8 +174,9 @@ async def tavily_search(
                     urljoin(result["discovered_url"], document.canonical_url)
                 )
             except ValueError:
-                logging.getLogger(__name__).info(
-                    "Ignoring invalid extracted canonical URL for %s", result["discovered_url"]
+                logger.debug(
+                    "Ignoring invalid extracted canonical URL",
+                    extra={"operation": "canonicalize_extracted_url", "provider": "tavily", "query_language": query_language},
                 )
         source = SourceRecord(
             canonical_url=source_canonical_url,
@@ -343,6 +352,7 @@ async def _deduplicate_source_artifacts(
     try:
         context = RunContext.from_runnable_config(config)
     except ValueError:
+        logger.debug("Skipping run-scoped source deduplication without run context")
         return deduplicate_source_artifacts(sources, versions, passages)
     existing_sources, existing_versions = await asyncio.gather(
         context.repository.list_sources(context.run_id),
@@ -381,6 +391,7 @@ async def _persist_tavily_ingestion(
     except ValueError:
         # Direct tool use remains available for isolated unit tests; graph execution
         # always supplies a durable context from the CLI.
+        logger.debug("Skipping Tavily ingestion persistence without run context")
         return
 
     raw_output = json.dumps(search_results, ensure_ascii=False, sort_keys=True, default=str)
@@ -395,6 +406,10 @@ async def _persist_tavily_ingestion(
             try:
                 canonical_url = canonicalize_url(discovered_url)
             except ValueError:
+                logger.debug(
+                    "Skipping Tavily persistence record with invalid URL",
+                    extra={"operation": "canonicalize_query_result", "provider": "tavily", "query_language": query_language},
+                )
                 continue
             query_records.append(
                 QueryRecord(
@@ -438,6 +453,7 @@ def _research_unit_id_from_config(config: RunnableConfig | None):
     try:
         return RunContext.from_runnable_config(config).research_unit_id
     except ValueError:
+        logger.debug("No research-unit context is available for direct tool use")
         return None
 
 async def tavily_search_async(

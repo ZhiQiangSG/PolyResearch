@@ -2,12 +2,13 @@
 
 import asyncio
 import json
+import logging
 import sqlite3
 import threading
 from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -24,16 +25,19 @@ from polyresearch.models import (
     ResearchRun,
     SourceRecord,
     SourceVersion,
-    TranslationRecord,
     TraceRecord,
+    TranslationRecord,
     VerificationResult,
 )
 from polyresearch.repositories.base import (
     ArtifactConflictError,
     EvidenceRepository,
-    RepositoryNotFoundError,
     ReportProvenanceError,
+    RepositoryNotFoundError,
 )
+from polyresearch.security import redacted_exception_info
+
+logger = logging.getLogger(__name__)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -135,7 +139,12 @@ class SqliteEvidenceRepository(EvidenceRepository):
     def _transaction(self):
         try:
             yield
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "SQLite transaction rolled back",
+                extra={"operation": "sqlite_transaction"},
+                exc_info=redacted_exception_info(error),
+            )
             self._connection.rollback()
             raise
         else:

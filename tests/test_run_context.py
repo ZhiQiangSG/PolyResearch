@@ -5,8 +5,8 @@ from uuid import uuid4
 
 from langchain_core.messages import HumanMessage
 
-from polyresearch.graph import initialize_research_run
 from polyresearch.repositories import SqliteEvidenceRepository
+from polyresearch.workflows.orchestrator import initialize_research_run
 
 
 class RunContextTests(unittest.IsolatedAsyncioTestCase):

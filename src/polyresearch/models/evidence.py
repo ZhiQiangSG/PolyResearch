@@ -478,6 +478,9 @@ class ReportBundle(BaseModel):
     unresolved_disagreements: list[UnresolvedDisagreement] = Field(default_factory=list)
     qa_issues: list[ReportQaIssue] = Field(default_factory=list)
     qa_passed: bool = True
+    # Hash of the claims, verification results, and sources used to render this
+    # immutable bundle.  A QA-passed bundle is reusable only for this snapshot.
+    evidence_fingerprint: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

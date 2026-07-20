@@ -3,13 +3,24 @@
 import re
 from urllib.parse import urlparse
 
-_SECRET = re.compile(r"(?i)\b(?:api[_-]?key|authorization|bearer|token|password)\b\s*[:=]\s*[^\s,;]+")
+_SECRET = re.compile(
+    r"(?i)\b(?:api[_-]?key|authorization|bearer|token|password)\b"
+    r"(?:\s*[:=]\s*|\s+)(?:bearer\s+)?[^\s,;]+"
+)
 _PROMPT_INJECTION = re.compile(r"(?i)\b(?:ignore (?:previous|all) instructions|system prompt|developer message|tool call)\b")
 
 
 def redact_secrets(value: str) -> str:
     """Keep credentials out of durable logs, attachments, and exports."""
     return _SECRET.sub("[REDACTED_SECRET]", value)
+
+
+def redacted_exception_info(
+    error: BaseException,
+) -> tuple[type[RuntimeError], RuntimeError, object]:
+    """Preserve a traceback while preventing exception text from leaking secrets."""
+    sanitized = RuntimeError(f"{type(error).__name__}: {redact_secrets(str(error))}")
+    return RuntimeError, sanitized, error.__traceback__
 
 
 def is_allowed_domain(url: str, *, allowed: list[str], blocked: list[str]) -> bool:

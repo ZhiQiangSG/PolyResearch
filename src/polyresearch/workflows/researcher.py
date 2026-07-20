@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from typing import Literal, cast
 from uuid import UUID
 
@@ -30,15 +31,19 @@ from polyresearch.prompts import (
     claim_cluster_verification_prompt,
     research_system_prompt,
 )
+
 from polyresearch.retrieval.source_ingestion import languages_match
 from polyresearch.runtime.model_utils import create_qwen_chat_model
 from polyresearch.retrieval.search_utils import select_citable_passages
 from polyresearch.runtime.text_utils import get_today_str
 from polyresearch.runtime.tool_registry import get_all_tools
 from polyresearch.runtime.retry import retry_async
-from polyresearch.security import redact_prompt_injection
+from polyresearch.security import redacted_exception_info, redact_prompt_injection
 from polyresearch.evidence.value_normalization import normalize_claim_values
 from polyresearch.retrieval.search_providers import planned_web_search
+
+logger = logging.getLogger(__name__)
+
 
 async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[Literal["researcher_tools"]]:
     """Individual researcher that conducts focused research on specific topics.
@@ -109,6 +114,11 @@ async def execute_tool_safely(tool, args, config):
             attempts=configurable.max_structured_output_retries,
         )
     except Exception as e:
+        logger.warning(
+            "Researcher tool execution failed",
+            extra={"operation": "execute_tool", "tool_name": getattr(tool, "name", type(tool).__name__)},
+            exc_info=redacted_exception_info(e),
+        )
         return f"Error executing tool: {str(e)}"
 
 
@@ -271,7 +281,12 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
                 ]
             ),
         )
-    except Exception:
+    except Exception as error:
+        logger.warning(
+            "Claim extraction failed; returning no extracted claims",
+            extra={"operation": "extract_claims", "run_id": str(context.run_id)},
+            exc_info=redacted_exception_info(error),
+        )
         return {
             "sources": sources,
             "passages": passages,
@@ -383,7 +398,12 @@ async def translate_claim_evidence(state: ResearcherState, config: RunnableConfi
                     ]
                 ),
             )
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "Evidence translation failed; retaining original-language passage",
+                extra={"operation": "translate_evidence", "passage_id": str(passage.id), "target_language": output_language},
+                exc_info=redacted_exception_info(error),
+            )
             # Translation is an optional derivative; retain original evidence when
             # a model call fails rather than replacing it with an uncertain string.
             continue
@@ -544,7 +564,12 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                     links_by_claim_id,
                 )
             }
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "Claim-cluster verification failed; marking clusters unresolved",
+                extra={"operation": "verify_claim_clusters", "run_id": str(context.run_id)},
+                exc_info=redacted_exception_info(error),
+            )
             drafts_by_cluster_id = {}
         for cluster_id, cluster_claims in verifiable_clusters.items():
             draft = drafts_by_cluster_id.get(cluster_id)
@@ -804,7 +829,12 @@ async def resolve_conflicts(state: ResearcherState, config: RunnableConfig):
                 ),
                 config=config,
             )
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "Conflict-resolution search failed; retaining unresolved status",
+                extra={"operation": "resolve_conflicts", "query_language": language, "target_source_type": source_type},
+                exc_info=redacted_exception_info(error),
+            )
             # The failed search is captured in query provenance by its provider path;
             # do not turn unresolved conflict into a fabricated consensus.
             continue

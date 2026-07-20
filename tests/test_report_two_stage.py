@@ -107,6 +107,25 @@ class ReportTwoStageTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(writer.schemas, [ReportOutline, ReportDraft])
                 self.assertEqual(len(await repository.list_report_bundles(run.id)), 1)
+                # A later verification/conflict-resolution pass changes the
+                # evidence snapshot, so QA-passed prose must be regenerated.
+                await repository.append_verification_results(run.id, [VerificationResult(
+                    claim_id=claim.id,
+                    status=VerificationStatus.SUPPORTED,
+                    confidence=0.95,
+                    rationale="A later verification pass confirmed the policy update.",
+                    evidence_link_ids=[(await repository.list_evidence_links(run.id))[0].id],
+                    verifier_model_id="qwen-test",
+                    verifier_prompt_version="verification-v1",
+                    attempt_number=2,
+                    trigger="conflict_resolution",
+                )])
+                await report_module.final_report_generation(
+                    {"messages": [], "research_brief": run.question},
+                    {"configurable": {"run_id": str(run.id), "evidence_repository": repository}},
+                )
+                self.assertEqual(writer.schemas, [ReportOutline, ReportDraft, ReportOutline, ReportDraft])
+                self.assertEqual(len(await repository.list_report_bundles(run.id)), 2)
             finally:
                 report_module.create_qwen_chat_model = original_factory
                 repository.close()

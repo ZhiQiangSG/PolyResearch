@@ -3,8 +3,11 @@
 import asyncio
 import hashlib
 import json
+import logging
+import os
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from urllib.parse import urljoin
 
@@ -22,9 +25,56 @@ from polyresearch.models import (
     TraceRecord,
 )
 from polyresearch.repositories import RunContext
-from polyresearch.security import redact_secrets
+from polyresearch.security import redacted_exception_info, redact_secrets
 
-_BAILIAN_LAST_REQUEST_AT: dict[str, float] = {}
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _BailianRateLimiter:
+    """One in-process reservation queue for a Bailian provider endpoint."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    next_allowed_at: float = 0.0
+
+
+_BAILIAN_RATE_LIMITERS: dict[str, _BailianRateLimiter] = {}
+
+
+def _bailian_limiter_key(bailian) -> str:
+    """Identify a provider account without retaining its credential in memory."""
+    api_key = bailian.authentication.api_key or os.getenv(
+        bailian.authentication.api_key_env_var
+    )
+    if not api_key:
+        # The MCP loader rejects this configuration before a request is made.
+        # Keep the fallback deterministic for isolated tool tests.
+        api_key = "missing-bailian-api-key"
+    credential_fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+    return f"{bailian.server_url}|{credential_fingerprint}"
+
+
+async def _reserve_bailian_request_slot(
+    provider_key: str,
+    minimum_interval: float,
+    *,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], Awaitable[object]] | None = None,
+) -> None:
+    """Reserve one request slot without holding the lock during network I/O."""
+    limiter = _BAILIAN_RATE_LIMITERS.get(provider_key)
+    if limiter is None:
+        limiter = _BailianRateLimiter()
+        _BAILIAN_RATE_LIMITERS[provider_key] = limiter
+    monotonic = clock or asyncio.get_running_loop().time
+    sleeper = sleep or asyncio.sleep
+    async with limiter.lock:
+        wait_seconds = limiter.next_allowed_at - monotonic()
+        if wait_seconds > 0:
+            await sleeper(wait_seconds)
+        # Record the actual reservation time after any scheduler delay, so later
+        # callers cannot obtain the same slot.
+        limiter.next_allowed_at = monotonic() + minimum_interval
 
 
 @dataclass(frozen=True)
@@ -88,13 +138,10 @@ class BailianWebSearchProvider:
         bailian = Configuration.from_runnable_config(config).bailian_web_search
         if bailian is None:  # Defensive guard; the loader already checks this.
             raise ToolException("Bailian Web Search is not configured.")
-        loop = asyncio.get_running_loop()
         minimum_interval = 1 / bailian.max_requests_per_second
-        last_request = _BAILIAN_LAST_REQUEST_AT.get(str(config.get("configurable", {}).get("run_id")), 0)
-        wait_seconds = minimum_interval - (loop.time() - last_request)
-        if wait_seconds > 0:
-            await asyncio.sleep(wait_seconds)
-        _BAILIAN_LAST_REQUEST_AT[str(config.get("configurable", {}).get("run_id"))] = loop.time()
+        await _reserve_bailian_request_slot(
+            _bailian_limiter_key(bailian), minimum_interval
+        )
         result = await asyncio.wait_for(
             tools[0].ainvoke({"query": request.query}, config=config),
             timeout=bailian.timeout_seconds,
@@ -128,6 +175,7 @@ async def _persist_bailian_query_record(
     try:
         context = RunContext.from_runnable_config(config)
     except ValueError:
+        logger.debug("Skipping Bailian query persistence without run context")
         return
     await context.repository.append_query_records(
         context.run_id,
@@ -157,6 +205,10 @@ def _bailian_result_rows(result: object) -> list[dict]:
         try:
             payload = json.loads(payload)
         except json.JSONDecodeError:
+            logger.debug(
+                "Ignoring malformed Bailian result payload",
+                extra={"operation": "parse_bailian_result", "provider": "bailian_web_search"},
+            )
             return []
     if not isinstance(payload, dict):
         return []
@@ -174,6 +226,7 @@ async def _persist_bailian_ingestion(
     try:
         context = RunContext.from_runnable_config(config)
     except ValueError:
+        logger.debug("Skipping Bailian ingestion persistence without run context")
         return [], []
 
     # Keep remote output immutable for audit while treating only extracted fields as data.
@@ -216,6 +269,10 @@ async def _persist_bailian_ingestion(
         try:
             canonical_url = canonicalize_url(discovered_url)
         except ValueError:
+            logger.debug(
+                "Skipping Bailian result with invalid URL",
+                extra={"operation": "canonicalize_bailian_url", "provider": "bailian_web_search", "query_language": request.language},
+            )
             continue
         query_records.append(
             QueryRecord(
@@ -256,6 +313,10 @@ async def _persist_bailian_ingestion(
                     urljoin(discovered_url, document.canonical_url)
                 )
             except ValueError:
+                logger.debug(
+                    "Ignoring invalid extracted Bailian canonical URL",
+                    extra={"operation": "canonicalize_extracted_url", "provider": "bailian_web_search", "query_language": request.language},
+                )
                 pass
         source = SourceRecord(
             canonical_url=source_canonical_url,
@@ -369,6 +430,18 @@ class SearchProviderRouter:
         try:
             return await provider.search(request, config)
         except Exception as error:
+            logger.warning(
+                "Bailian discovery failed; falling back to Tavily",
+                extra={
+                    "operation": "provider_routed_discovery",
+                    "provider": provider.name,
+                    "fallback_provider": "tavily",
+                    "query_language": request.language,
+                    "target_source_type": request.target_source_type,
+                    "run_id": str(config.get("configurable", {}).get("run_id", "")),
+                },
+                exc_info=redacted_exception_info(error),
+            )
             # Preserve the failed Bailian attempt before using a non-equivalent
             # fallback. The succeeding Tavily record points back to this attempt.
             await _persist_bailian_query_record(
@@ -434,6 +507,17 @@ async def planned_web_search(
     except Exception as error:
         result = None
         failure = str(error)
+        logger.warning(
+            "Provider-routed discovery failed",
+            extra={
+                "operation": "provider_routed_discovery",
+                "provider": provider.name,
+                "query_language": language,
+                "target_source_type": target_source_type,
+                "run_id": str(context.run_id),
+            },
+            exc_info=redacted_exception_info(error),
+        )
     try:
         context = RunContext.from_runnable_config(config)
         records = await context.repository.list_query_records(context.run_id)
@@ -455,6 +539,10 @@ async def planned_web_search(
             provider_failure=failure or next((record.failure for record in matching if record.failure), None),
         )])
     except ValueError:
+        logger.debug(
+            "Skipping provider trace persistence without run context",
+            extra={"operation": "persist_provider_trace", "provider": provider.name},
+        )
         pass
     if failure is not None:
         raise ToolException(failure)

@@ -153,11 +153,25 @@ class Configuration(BaseModel):
     def from_runnable_config(
         cls, config: Optional[RunnableConfig] = None
     ) -> "Configuration":
-        """Create a Configuration instance from a RunnableConfig."""
+        """Create a Configuration instance from runtime overrides and the environment.
+
+        Bailian is enabled consistently for CLI, graph, and API callers when its
+        default credential is available. An explicit runtime or environment
+        Bailian setting always takes precedence, including an explicit ``None``.
+        """
         configurable = config.get("configurable", {}) if config else {}
         field_names = list(cls.model_fields.keys())
         values: dict[str, Any] = {
             field_name: os.environ.get(field_name.upper(), configurable.get(field_name))
             for field_name in field_names
         }
+        bailian_explicitly_configured = (
+            "bailian_web_search" in configurable
+            or "BAILIAN_WEB_SEARCH" in os.environ
+        )
+        if (
+            not bailian_explicitly_configured
+            and os.getenv(BailianAuthenticationConfig().api_key_env_var)
+        ):
+            values["bailian_web_search"] = BailianWebSearchConfig()
         return cls(**{k: v for k, v in values.items() if v is not None})
