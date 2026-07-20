@@ -155,6 +155,20 @@ class ReportStatement(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class ReportStatementDraft(BaseModel):
+    """Model-selected report wording that must resolve to known claim IDs."""
+
+    rendered_text: str = Field(min_length=1)
+    claim_ids: list[UUID] = Field(min_length=1)
+
+
+class ReportDraft(BaseModel):
+    """Structured report content before statement/citation records are created."""
+
+    title: str = Field(default="Research report", min_length=1)
+    statements: list[ReportStatementDraft] = Field(default_factory=list)
+
+
 class ReportBundle(BaseModel):
     """The exported, auditable report artifacts for one research run."""
 

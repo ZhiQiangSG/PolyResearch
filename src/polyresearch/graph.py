@@ -40,9 +40,13 @@ from polyresearch.models import (
     ResearcherState,
     ResearchQuestion,
     ResearchRun,
+    ReportBundle,
+    ReportDraft,
+    ReportStatement,
     SourceRecord,
     SupervisorState,
     VerificationResult,
+    VerificationStatus,
 )
 from polyresearch.repositories import RunContext
 from polyresearch.utils import (
@@ -713,7 +717,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
         Dictionary containing the final report and cleared state
     """
     # Step 1: Load report inputs from the durable typed evidence ledger.
-    _, sources, passages, claims, _, verification_results = await _load_evidence_ledger(
+    context, sources, passages, claims, _, verification_results = await _load_evidence_ledger(
         config
     )
     findings = json.dumps(
@@ -735,6 +739,8 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
         configurable.final_report_model,
         configurable.final_report_model_max_tokens,
         config,
+    ).with_structured_output(ReportDraft).with_retry(
+        stop_after_attempt=configurable.max_structured_output_retries
     )
     
     # Step 3: Attempt report generation with token limit retry logic
@@ -753,14 +759,40 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
             )
             
             # Generate the final report
-            final_report = await writer_model.ainvoke([
+            report_draft = cast(ReportDraft, await writer_model.ainvoke([
                 HumanMessage(content=final_report_prompt)
-            ])
+            ]))
+            statements = _build_report_statements(
+                run_id=context.run_id,
+                report_draft=report_draft,
+                claims=claims,
+                verification_results=verification_results,
+            )
+            markdown = _render_statement_markdown(
+                title=report_draft.title,
+                statements=statements,
+                passages=passages,
+                sources=sources,
+            )
+            await context.repository.append_report_statements(context.run_id, statements)
+            bundle = ReportBundle(
+                run_id=context.run_id,
+                markdown=markdown,
+                provenance_json={
+                    "statement_ids": [str(statement.id) for statement in statements],
+                    "claim_ids": [
+                        str(claim_id)
+                        for statement in statements
+                        for claim_id in statement.claim_ids
+                    ],
+                },
+            )
+            await context.repository.append_report_bundles(context.run_id, [bundle])
             
             # Return successful report generation
             return {
-                "final_report": final_report.content, 
-                "messages": [final_report],
+                "final_report": markdown,
+                "messages": [AIMessage(content=markdown)],
             }
             
         except Exception as e:
@@ -797,6 +829,81 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
         "final_report": "Error generating final report: Maximum retries exceeded",
         "messages": [AIMessage(content="Report generation failed after maximum retries")],
     }
+
+
+def _build_report_statements(
+    *,
+    run_id,
+    report_draft: ReportDraft,
+    claims: list[Claim],
+    verification_results: list[VerificationResult],
+) -> list[ReportStatement]:
+    """Resolve model-selected claim IDs into durable, cited report statements."""
+    claims_by_id = {claim.id: claim for claim in claims}
+    statuses_by_claim_id = {
+        result.claim_id: result.status for result in verification_results
+    }
+    statements: list[ReportStatement] = []
+    for draft in report_draft.statements:
+        if not set(draft.claim_ids).issubset(claims_by_id):
+            continue
+        citation_ids = list(
+            dict.fromkeys(
+                passage_id
+                for claim_id in draft.claim_ids
+                for passage_id in claims_by_id[claim_id].evidence_passage_ids
+            )
+        )
+        statuses = [statuses_by_claim_id.get(claim_id) for claim_id in draft.claim_ids]
+        status = (
+            statuses[0]
+            if statuses and all(candidate == statuses[0] for candidate in statuses)
+            and statuses[0] is not None
+            else VerificationStatus.INSUFFICIENT_EVIDENCE
+        )
+        statements.append(
+            ReportStatement(
+                run_id=run_id,
+                rendered_text=draft.rendered_text,
+                claim_ids=draft.claim_ids,
+                citation_ids=citation_ids,
+                verification_status=status,
+            )
+        )
+    return statements
+
+
+def _render_statement_markdown(
+    *,
+    title: str,
+    statements: list[ReportStatement],
+    passages: list[EvidencePassage],
+    sources: list[SourceRecord],
+) -> str:
+    """Render persisted statements and stable passage citations as Markdown."""
+    passages_by_id = {passage.id: passage for passage in passages}
+    sources_by_id = {source.id: source for source in sources}
+    rendered_statements = []
+    used_citation_ids = []
+    for statement in statements:
+        citations = " ".join(f"[P:{citation_id}]" for citation_id in statement.citation_ids)
+        rendered_statements.append(f"{statement.rendered_text} {citations}".rstrip())
+        used_citation_ids.extend(statement.citation_ids)
+
+    lines = [f"# {title}", "", *rendered_statements]
+    if used_citation_ids:
+        lines.extend(["", "## Sources", ""])
+        for citation_id in dict.fromkeys(used_citation_ids):
+            passage = passages_by_id.get(citation_id)
+            if not passage:
+                continue
+            source = sources_by_id.get(passage.source_id)
+            source_label = source.title if source else "Unknown source"
+            source_url = source.canonical_url if source else ""
+            lines.append(
+                f"- [P:{citation_id}] {source_label} — {source_url} ({passage.locator})"
+            )
+    return "\n".join(lines)
 
 # Main Deep Researcher Graph Construction
 # Creates the complete deep research workflow from user input to final report
