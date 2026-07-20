@@ -6,7 +6,6 @@ from uuid import uuid4
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
-    MessageLikeRepresentation,
     SystemMessage,
     ToolMessage,
     get_buffer_string,
@@ -19,6 +18,33 @@ from langgraph.types import Command
 from polyresearch.configuration import (
     Configuration,
 )
+from polyresearch.models import (
+    AgentInputState,
+    AgentState,
+    Claim,
+    ClaimExtractionResult,
+    ClarifyWithUser,
+    ConductResearch,
+    EvidenceLink,
+    EvidencePassage,
+    LanguageDecision,
+    LanguageExpansionDecision,
+    ProvenanceAttachment,
+    ReportBundle,
+    ReportDraft,
+    ReportQaIssue,
+    ReportStatement,
+    ResearchComplete,
+    ResearcherOutputState,
+    ResearcherState,
+    ResearchPlan,
+    ResearchQuestion,
+    ResearchRun,
+    SourceRecord,
+    SupervisorState,
+    VerificationResult,
+    VerificationStatus,
+)
 from polyresearch.prompts import (
     clarify_with_user_instructions,
     final_report_generation_prompt,
@@ -28,34 +54,8 @@ from polyresearch.prompts import (
     research_system_prompt,
     transform_messages_into_research_topic_prompt,
 )
-from polyresearch.models import (
-    AgentInputState,
-    AgentState,
-    ClarifyWithUser,
-    ConductResearch,
-    ResearchComplete,
-    Claim,
-    ClaimExtractionResult,
-    EvidenceLink,
-    LanguageExpansionDecision,
-    EvidencePassage,
-    ProvenanceAttachment,
-    ResearcherOutputState,
-    ResearcherState,
-    ResearchQuestion,
-    ResearchPlan,
-    ResearchRun,
-    ReportBundle,
-    ReportDraft,
-    ReportQaIssue,
-    ReportStatement,
-    SourceRecord,
-    SupervisorState,
-    VerificationResult,
-    VerificationStatus,
-)
-from polyresearch.repositories import RunContext
 from polyresearch.report_qa import validate_report_statements
+from polyresearch.repositories import RunContext
 from polyresearch.utils import (
     create_qwen_chat_model,
     get_all_tools,
@@ -870,6 +870,14 @@ async def language_gap_analysis(
     existing_languages = {language.language for language in plan.ranked_languages}
     existing_priorities = [language.priority for language in plan.ranked_languages]
     additional_languages = decision.additional_languages
+    existing_decision_languages = {
+        language_decision.language for language_decision in plan.language_decisions
+    }
+    newly_skipped_languages = {
+        language_decision.language for language_decision in decision.considered_but_skipped
+    }
+    if existing_decision_languages & newly_skipped_languages:
+        raise ValueError("Gap analysis cannot reconsider an already decided language")
     if decision.should_add_languages:
         additional_names = {language.language for language in additional_languages}
         if (
@@ -890,6 +898,18 @@ async def language_gap_analysis(
                 **plan.query_variants,
                 **decision.additional_query_variants,
             },
+            "language_decisions": [
+                *plan.language_decisions,
+                *[
+                    LanguageDecision(
+                        language=language.language,
+                        status="added_after_initial_retrieval",
+                        rationale=language.selection_rationale,
+                    )
+                    for language in additional_languages
+                ],
+                *decision.considered_but_skipped,
+            ],
             "post_retrieval_decision": decision,
             "metadata": {
                 **plan.metadata,

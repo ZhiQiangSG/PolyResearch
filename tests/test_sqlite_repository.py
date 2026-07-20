@@ -8,6 +8,7 @@ from polyresearch.models import (
     Claim,
     EvidenceLink,
     EvidencePassage,
+    LanguageDecision,
     ProvenanceAttachment,
     QueryRecord,
     ReportBundle,
@@ -79,6 +80,18 @@ class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                         )
                     ],
                     language_rationale={"en": "Primary source language"},
+                    language_decisions=[
+                        LanguageDecision(
+                            language="en",
+                            status="selected",
+                            rationale="Primary source language.",
+                        ),
+                        LanguageDecision(
+                            language="fr",
+                            status="skipped",
+                            rationale="No French-specific evidence gap is expected.",
+                        ),
+                    ],
                     query_variants={"en": ["policy update"]},
                 )
                 query = QueryRecord(

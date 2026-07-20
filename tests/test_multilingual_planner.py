@@ -9,6 +9,7 @@ from polyresearch.models import (
     AtomicSubquestion,
     LanguageSelectionAssessment,
     LanguageExpansionDecision,
+    LanguageDecision,
     ResearchEntity,
     ResearchLanguage,
     ResearchPlan,
@@ -93,6 +94,14 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                                 language["language"]
                             ),
                             expected_source_types=language["expected_source_types"],
+                        )
+                        for language in languages
+                    ],
+                    language_decisions=[
+                        LanguageDecision(
+                            language=language["language"],
+                            status="selected",
+                            rationale=language["expected_unique_value"],
                         )
                         for language in languages
                     ],
@@ -199,6 +208,18 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                     )
                 ],
                 language_rationale={"zh": "Selected for primary records."},
+                language_decisions=[
+                    LanguageDecision(
+                        language="zh",
+                        status="selected",
+                        rationale="Chinese primary records are in scope.",
+                    ),
+                    LanguageDecision(
+                        language="en",
+                        status="skipped",
+                        rationale="English coverage is not expected to add primary records.",
+                    ),
+                ],
                 query_variants={"zh": ["政策X 变更"]},
                 anticipated_conflict_dimensions=["publication date"],
             )
@@ -249,11 +270,25 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                     )
                 ],
                 language_rationale={"zh": "Selected for primary records."},
+                language_decisions=[
+                    LanguageDecision(
+                        language="zh",
+                        status="selected",
+                        rationale="Chinese primary records are in scope.",
+                    )
+                ],
                 query_variants={"zh": ["政策X 变更"]},
             )
             decision = LanguageExpansionDecision(
                 should_add_languages=False,
                 rationale="No retrieved gap justifies another language yet.",
+                considered_but_skipped=[
+                    LanguageDecision(
+                        language="ko",
+                        status="skipped",
+                        rationale="The available gaps are not specific to Korean sources.",
+                    )
+                ],
             )
             stub = _PlannerStub(decision)
             original_factory = graph_module.create_qwen_chat_model
@@ -270,6 +305,14 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(result.update["language_gap_reviewed"])
                 self.assertEqual(len(plans), 2)
                 self.assertFalse(plans[-1].post_retrieval_decision.should_add_languages)
+                self.assertIn(
+                    LanguageDecision(
+                        language="ko",
+                        status="skipped",
+                        rationale="The available gaps are not specific to Korean sources.",
+                    ),
+                    plans[-1].language_decisions,
+                )
                 self.assertIn("InitialRetrievalLedger", stub.messages[0].content)
             finally:
                 graph_module.create_qwen_chat_model = original_factory

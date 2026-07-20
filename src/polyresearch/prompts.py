@@ -93,6 +93,7 @@ Requirements:
 - Populate `terminology` for legally, politically, culturally, or technically material terms. Preserve original term and language alongside a normalized term and any translation. Mark every translation as `exact`, `approximate`, or `not_translated`; for `approximate`, explain the non-equivalence in `translation_note` and never state or imply that it is exact.
 - Preserve each entity's canonical name, aliases, transliterations, and native-script variants; do not claim approximate translations are equivalent.
 - Rank only languages that are justified for this topic. Each ranked language needs a unique-value explanation, priority (1 is highest), and a positive query budget.
+- Populate `language_decisions` for every language considered. Use `selected` for every ranked language and `skipped` for every rejected candidate; every decision needs a concrete rationale. This decision ledger, not an omitted language, is the record of why coverage was selected or skipped.
 - Order `ranked_languages` by ascending priority. Allocate the earliest, largest attention budget to the language with the highest expected information gain; later languages must state their incremental value over earlier coverage.
 - For every selected language, populate `selection_assessment` explicitly. Assess: (1) place/country and institutional jurisdiction; (2) primary actors and likely official-record languages; (3) topic-specific scholarly, technical, and media ecosystems; (4) diasporic or regional coverage; (5) likely primary-source availability; and (6) marginal information gain beyond higher-ranked languages. Write `not applicable` with a reason when a factor does not apply; never omit it.
 - Supply native-language query variants for every selected language, appropriate expected source types and preferred domains where known.
@@ -123,7 +124,7 @@ When adding a language:
 - explain its marginal information gain and supply non-empty native-language queries;
 - preserve all existing language selections and terminology.
 
-When no addition is warranted, set `should_add_languages` false, return no additional languages or queries, and document why current coverage is sufficient or what gap remains unresolved.
+When no addition is warranted, set `should_add_languages` false, return no additional languages or queries, and document why current coverage is sufficient or what gap remains unresolved. Record each newly considered but rejected language in `considered_but_skipped` with status `skipped` and a rationale.
 """
 
 lead_researcher_prompt = """You are a research supervisor. Your job is to conduct research by calling the "ConductResearch" tool. For context, today's date is {date}.

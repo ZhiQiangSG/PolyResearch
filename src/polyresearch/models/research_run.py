@@ -100,6 +100,16 @@ class ResearchLanguage(BaseModel):
     preferred_domains: list[str] = Field(default_factory=list)
 
 
+class LanguageDecision(BaseModel):
+    """An auditable selection or rejection decision for one language."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    language: str = Field(min_length=1)
+    status: Literal["selected", "skipped", "added_after_initial_retrieval"]
+    rationale: str = Field(min_length=1)
+
+
 class EvidenceGap(BaseModel):
     """A retrieval shortfall that may justify expanding language coverage."""
 
@@ -121,6 +131,7 @@ class LanguageExpansionDecision(BaseModel):
     evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
     additional_languages: list[ResearchLanguage] = Field(default_factory=list)
     additional_query_variants: dict[str, list[str]] = Field(default_factory=dict)
+    considered_but_skipped: list[LanguageDecision] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_addition(self) -> "LanguageExpansionDecision":
@@ -137,6 +148,12 @@ class LanguageExpansionDecision(BaseModel):
             raise ValueError(
                 "additional_query_variants is required for every additional language"
             )
+        if any(decision.status != "skipped" for decision in self.considered_but_skipped):
+            raise ValueError("considered_but_skipped must contain only skipped decisions")
+        if languages & {
+            decision.language for decision in self.considered_but_skipped
+        }:
+            raise ValueError("a language cannot be both added and skipped")
         return self
 
 
@@ -151,6 +168,7 @@ class ResearchPlan(BaseModel):
     entities: list[ResearchEntity] = Field(default_factory=list)
     terminology: list[TerminologyRecord] = Field(default_factory=list)
     ranked_languages: list[ResearchLanguage] = Field(min_length=1)
+    language_decisions: list[LanguageDecision] = Field(min_length=1)
     language_rationale: dict[str, str] = Field(default_factory=dict)
     query_variants: dict[str, list[str]] = Field(default_factory=dict)
     target_source_types: list[str] = Field(default_factory=list)
@@ -173,6 +191,32 @@ class ResearchPlan(BaseModel):
             raise ValueError("ranked_languages must not repeat a priority")
         if priorities != sorted(priorities):
             raise ValueError("ranked_languages must be ordered by ascending priority")
+        decision_languages = [decision.language for decision in self.language_decisions]
+        if len(decision_languages) != len(set(decision_languages)):
+            raise ValueError("language_decisions must not repeat a language")
+        active_decision_languages = {
+            decision.language
+            for decision in self.language_decisions
+            if decision.status in {"selected", "added_after_initial_retrieval"}
+        }
+        if set(languages) != active_decision_languages:
+            raise ValueError(
+                "every ranked language needs a selected or added language decision"
+            )
+        skipped_languages = {
+            decision.language
+            for decision in self.language_decisions
+            if decision.status == "skipped"
+        }
+        if skipped_languages & set(languages):
+            raise ValueError("a skipped language cannot be ranked for retrieval")
+        if self.post_retrieval_decision is None and any(
+            decision.status == "added_after_initial_retrieval"
+            for decision in self.language_decisions
+        ):
+            raise ValueError(
+                "added_after_initial_retrieval requires a post-retrieval decision"
+            )
         missing_rationales = set(languages) - set(self.language_rationale)
         if missing_rationales:
             raise ValueError(
