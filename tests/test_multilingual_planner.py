@@ -7,6 +7,7 @@ from uuid import uuid4
 from polyresearch.models import (
     AtomicSubquestion,
     LanguageSelectionAssessment,
+    LanguageExpansionDecision,
     ResearchEntity,
     ResearchLanguage,
     ResearchPlan,
@@ -118,6 +119,55 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("ResearchBrief", stub.messages[0].content)
                 self.assertIn("marginal information gain", stub.messages[0].content)
                 self.assertIn("do not use a fixed default language list", stub.messages[0].content)
+            finally:
+                graph_module.create_qwen_chat_model = original_factory
+                repository.close()
+
+    async def test_gap_review_records_a_no_expansion_decision_after_retrieval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(id=uuid4(), question="How did a policy change?", output_language="en")
+            plan = ResearchPlan(
+                run_id=run.id,
+                subquestions=[
+                    AtomicSubquestion(
+                        question="What changed?", answer_scope="Identify the policy change."
+                    )
+                ],
+                ranked_languages=[
+                    ResearchLanguage(
+                        language="zh",
+                        priority=1,
+                        query_budget=3,
+                        expected_unique_value="Official Chinese records.",
+                        selection_rationale="The policy was issued in China.",
+                        selection_assessment=_selection_assessment(),
+                        expected_source_types=["official"],
+                    )
+                ],
+                language_rationale={"zh": "Selected for primary records."},
+                query_variants={"zh": ["政策X 变更"]},
+            )
+            decision = LanguageExpansionDecision(
+                should_add_languages=False,
+                rationale="No retrieved gap justifies another language yet.",
+            )
+            stub = _PlannerStub(decision)
+            original_factory = graph_module.create_qwen_chat_model
+            graph_module.create_qwen_chat_model = lambda *args, **kwargs: stub
+            try:
+                await repository.create_run(run)
+                await repository.append_research_plans(run.id, [plan])
+                result = await graph_module.language_gap_analysis(
+                    {"research_brief": run.question, "research_plan": plan},
+                    {"configurable": {"run_id": str(run.id), "evidence_repository": repository}},
+                )
+                plans = await repository.list_research_plans(run.id)
+                self.assertEqual(result.goto, "final_report_generation")
+                self.assertTrue(result.update["language_gap_reviewed"])
+                self.assertEqual(len(plans), 2)
+                self.assertFalse(plans[-1].post_retrieval_decision.should_add_languages)
+                self.assertIn("InitialRetrievalLedger", stub.messages[0].content)
             finally:
                 graph_module.create_qwen_chat_model = original_factory
                 repository.close()

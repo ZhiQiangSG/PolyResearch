@@ -22,6 +22,7 @@ from polyresearch.configuration import (
 from polyresearch.prompts import (
     clarify_with_user_instructions,
     final_report_generation_prompt,
+    language_gap_analysis_prompt,
     lead_researcher_prompt,
     multilingual_planner_prompt,
     research_system_prompt,
@@ -36,6 +37,7 @@ from polyresearch.models import (
     Claim,
     ClaimExtractionResult,
     EvidenceLink,
+    LanguageExpansionDecision,
     EvidencePassage,
     ProvenanceAttachment,
     ResearcherOutputState,
@@ -807,6 +809,128 @@ researcher_builder.add_edge("extract_claims", END)          # Exit point after c
 # Compile researcher subgraph for parallel execution by supervisor
 researcher_subgraph = researcher_builder.compile()
 
+
+async def language_gap_analysis(
+    state: AgentState, config: RunnableConfig
+) -> Command[Literal["research_supervisor", "final_report_generation"]]:
+    """Use typed retrieval gaps to make one bounded language-expansion decision."""
+    if state.get("language_gap_reviewed", False):
+        return Command(goto="final_report_generation")
+
+    context = RunContext.from_runnable_config(config)
+    configurable = Configuration.from_runnable_config(config)
+    plan = state.get("research_plan")
+    if plan is None:
+        plans = await context.repository.list_research_plans(context.run_id)
+        if not plans:
+            return Command(
+                goto="final_report_generation", update={"language_gap_reviewed": True}
+            )
+        plan = plans[-1]
+    elif not isinstance(plan, ResearchPlan):
+        plan = ResearchPlan.model_validate(plan)
+
+    _, sources, passages, claims, _, verification_results = await _load_evidence_ledger(
+        config
+    )
+    evidence_ledger = json.dumps(
+        {
+            "sources": _serialize_artifacts(sources, SourceRecord),
+            "passages": _serialize_artifacts(passages, EvidencePassage),
+            "claims": _serialize_artifacts(claims, Claim),
+            "verification_results": _serialize_artifacts(
+                verification_results, VerificationResult
+            ),
+        },
+        ensure_ascii=False,
+    )
+    gap_model = create_qwen_chat_model(
+        configurable,
+        configurable.research_model,
+        configurable.research_model_max_tokens,
+        config,
+    ).with_structured_output(LanguageExpansionDecision).with_retry(
+        stop_after_attempt=configurable.max_structured_output_retries
+    )
+    decision = cast(
+        LanguageExpansionDecision,
+        await gap_model.ainvoke(
+            [
+                HumanMessage(
+                    content=language_gap_analysis_prompt.format(
+                        research_brief=state.get("research_brief", ""),
+                        research_plan=plan.model_dump_json(),
+                        evidence_ledger=evidence_ledger,
+                    )
+                )
+            ]
+        ),
+    )
+
+    existing_languages = {language.language for language in plan.ranked_languages}
+    existing_priorities = [language.priority for language in plan.ranked_languages]
+    additional_languages = decision.additional_languages
+    if decision.should_add_languages:
+        additional_names = {language.language for language in additional_languages}
+        if (
+            additional_names & existing_languages
+            or len(additional_names) != len(additional_languages)
+            or any(language.priority <= max(existing_priorities) for language in additional_languages)
+        ):
+            raise ValueError(
+                "Language expansion must add unique languages with priorities after "
+                "the initial research plan"
+            )
+
+    updated_plan = plan.model_copy(
+        update={
+            "id": uuid4(),
+            "ranked_languages": [*plan.ranked_languages, *additional_languages],
+            "query_variants": {
+                **plan.query_variants,
+                **decision.additional_query_variants,
+            },
+            "post_retrieval_decision": decision,
+            "metadata": {
+                **plan.metadata,
+                "plan_phase": "post_retrieval_language_gap_analysis",
+            },
+        }
+    )
+    # Validate the merged, append-only plan before it becomes durable provenance.
+    updated_plan = ResearchPlan.model_validate(updated_plan.model_dump())
+    await context.repository.append_research_plans(context.run_id, [updated_plan])
+
+    update = {
+        "research_plan": updated_plan,
+        "language_expansion_decision": decision,
+        "language_gap_reviewed": True,
+    }
+    if not decision.should_add_languages:
+        return Command(goto="final_report_generation", update=update)
+
+    supervisor_system_prompt = lead_researcher_prompt.format(
+        date=get_today_str(),
+        max_concurrent_research_units=configurable.max_concurrent_research_units,
+        max_researcher_iterations=configurable.max_researcher_iterations,
+    )
+    update["supervisor_messages"] = {
+        "type": "override",
+        "value": [
+            SystemMessage(content=supervisor_system_prompt),
+            HumanMessage(
+                content=(
+                    "Perform focused follow-up retrieval only for the languages "
+                    "added after the evidence-gap review. Use the persisted plan's "
+                    "queries, source types, and budgets.\n\n"
+                    f"{updated_plan.model_dump_json()}"
+                )
+            ),
+        ],
+    }
+    return Command(goto="research_supervisor", update=update)
+
+
 async def final_report_generation(state: AgentState, config: RunnableConfig):
     """Generate the final comprehensive research report with retry logic for token limits.
     
@@ -1051,11 +1175,12 @@ graph_builder.add_node("clarify_with_user", clarify_with_user)           # User 
 graph_builder.add_node("write_research_brief", write_research_brief)     # Research planning phase
 graph_builder.add_node("multilingual_planner", multilingual_planner)      # Adaptive language planning
 graph_builder.add_node("research_supervisor", supervisor_subgraph)       # Research execution phase
+graph_builder.add_node("language_gap_analysis", language_gap_analysis)   # One bounded expansion review
 graph_builder.add_node("final_report_generation", final_report_generation)  # Report generation phase
 
 # Define main workflow edges for sequential execution
 graph_builder.add_edge(START, "initialize_research_run")                 # Durable run setup
-graph_builder.add_edge("research_supervisor", "final_report_generation") # Research to report
+graph_builder.add_edge("research_supervisor", "language_gap_analysis")   # Initial retrieval to gap review
 graph_builder.add_edge("final_report_generation", END)                   # Final exit point
 
 # Compile the complete research workflow

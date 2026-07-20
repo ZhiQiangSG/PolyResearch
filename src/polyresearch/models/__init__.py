@@ -34,7 +34,9 @@ from polyresearch.models.structured_outputs import (
 )
 from polyresearch.models.research_run import (
     AtomicSubquestion,
+    EvidenceGap,
     LanguageSelectionAssessment,
+    LanguageExpansionDecision,
     ResearchEntity,
     ResearchLanguage,
     ResearchPlan,
@@ -50,10 +52,12 @@ __all__ = [
     "ClarifyWithUser",
     "ConductResearch",
     "EvidenceLink",
+    "EvidenceGap",
     "EvidencePassage",
     "ProvenanceAttachment",
     "QueryRecord",
     "LanguageSelectionAssessment",
+    "LanguageExpansionDecision",
     "ResearchComplete",
     "ResearcherOutputState",
     "ResearcherState",

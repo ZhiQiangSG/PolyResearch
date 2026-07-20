@@ -68,6 +68,46 @@ class ResearchLanguage(BaseModel):
     preferred_domains: list[str] = Field(default_factory=list)
 
 
+class EvidenceGap(BaseModel):
+    """A retrieval shortfall that may justify expanding language coverage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(min_length=1)
+    affected_subquestion: str = Field(min_length=1)
+    missing_evidence: str = Field(min_length=1)
+    languages_considered: list[str] = Field(default_factory=list)
+
+
+class LanguageExpansionDecision(BaseModel):
+    """Post-retrieval decision to add languages only when gaps warrant it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    should_add_languages: bool
+    rationale: str = Field(min_length=1)
+    evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
+    additional_languages: list[ResearchLanguage] = Field(default_factory=list)
+    additional_query_variants: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_addition(self) -> "LanguageExpansionDecision":
+        if self.should_add_languages and not self.additional_languages:
+            raise ValueError(
+                "additional_languages is required when should_add_languages is true"
+            )
+        if not self.should_add_languages and self.additional_languages:
+            raise ValueError(
+                "additional_languages must be empty when should_add_languages is false"
+            )
+        languages = {language.language for language in self.additional_languages}
+        if self.should_add_languages and languages - set(self.additional_query_variants):
+            raise ValueError(
+                "additional_query_variants is required for every additional language"
+            )
+        return self
+
+
 class ResearchPlan(BaseModel):
     """Reproducible research-plan decision recorded for a run."""
 
@@ -83,6 +123,7 @@ class ResearchPlan(BaseModel):
     target_source_types: list[str] = Field(default_factory=list)
     target_domains: list[str] = Field(default_factory=list)
     anticipated_conflict_dimensions: list[str] = Field(default_factory=list)
+    post_retrieval_decision: LanguageExpansionDecision | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     model_id: str | None = None
     prompt_version: str | None = None
@@ -97,6 +138,8 @@ class ResearchPlan(BaseModel):
             raise ValueError("ranked_languages must not repeat a language")
         if len(priorities) != len(set(priorities)):
             raise ValueError("ranked_languages must not repeat a priority")
+        if priorities != sorted(priorities):
+            raise ValueError("ranked_languages must be ordered by ascending priority")
         missing_rationales = set(languages) - set(self.language_rationale)
         if missing_rationales:
             raise ValueError(
