@@ -28,6 +28,15 @@ class DocumentSection(BaseModel):
     heading_level: int | None = Field(default=None, ge=1, le=6)
 
 
+class SourceQualityAssessment(BaseModel):
+    """Explainable, versioned initial assessment that can be recalculated later."""
+
+    score: float = Field(ge=0, le=1)
+    scoring_version: str = Field(min_length=1)
+    factor_scores: dict[str, float] = Field(default_factory=dict)
+    rationale: list[str] = Field(default_factory=list)
+
+
 class SourceRecord(BaseModel):
     """A retrieved source with immutable discovery and retrieval provenance."""
 
@@ -50,6 +59,7 @@ class SourceRecord(BaseModel):
     publisher_family: str | None = None
     shared_origin_cluster_id: str | None = None
     near_duplicate_cluster_id: str | None = None
+    initial_quality_assessment: SourceQualityAssessment | None = None
     extraction_quality: float | None = Field(default=None, ge=0, le=1)
     extraction_notes: list[str] = Field(default_factory=list)
     document_structure: list[DocumentSection] = Field(default_factory=list)

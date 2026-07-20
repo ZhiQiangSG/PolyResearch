@@ -43,6 +43,7 @@ from polyresearch.models import (
 )
 from polyresearch.repositories import RunContext
 from polyresearch.deduplication import deduplicate_source_artifacts
+from polyresearch.source_quality import score_initial_source_quality
 from polyresearch.source_ingestion import (
     extract_document,
     fetch_source_content,
@@ -201,6 +202,7 @@ async def tavily_search(
             language_detection_method=document.language_detection_method,
             planned_query_language=query_language,
             language_matches_planned_query=languages_match(document.language, query_language),
+            source_type=target_source_type or "web",
             published_at=document.published_at,
             updated_at=document.updated_at,
             content_hash=content_hash,
@@ -210,6 +212,13 @@ async def tavily_search(
             research_unit_id=_research_unit_id_from_config(config),
             discovered_url=result["discovered_url"],
             redirect_chain=result["redirect_chain"],
+        )
+        source = source.model_copy(
+            update={
+                "initial_quality_assessment": score_initial_source_quality(
+                    source, document.content, query=result.get("query")
+                )
+            }
         )
         source_version = SourceVersion(
             source_id=source.id,

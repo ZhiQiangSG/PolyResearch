@@ -181,6 +181,7 @@ async def _persist_bailian_ingestion(
         canonicalize_url,
     )
     from polyresearch.source_ingestion import extract_document, languages_match
+    from polyresearch.source_quality import score_initial_source_quality
 
     sources: list[SourceRecord] = []
     source_versions: list[SourceVersion] = []
@@ -254,6 +255,13 @@ async def _persist_bailian_ingestion(
             extraction_notes=document.extraction_notes,
             document_structure=document.document_structure,
             research_unit_id=context.research_unit_id,
+        )
+        source = source.model_copy(
+            update={
+                "initial_quality_assessment": score_initial_source_quality(
+                    source, document.content, query=request.query
+                )
+            }
         )
         sources.append(source)
         source_versions.append(
