@@ -4,14 +4,24 @@ from pydantic import BaseModel, Field
 
 
 class ConductResearch(BaseModel):
-    """Request focused research on one clearly scoped topic."""
+    """Request one bounded, evidence-producing research unit."""
 
-    research_topic: str = Field(
+    task: "EvidenceTask" = Field(
         description=(
-            "The topic to research. It must be a single topic described in high "
-            "detail (at least a paragraph)."
+            "A typed evidence task selected from the persisted multilingual plan; "
+            "never an open-ended prose-summary request."
         ),
     )
+
+
+class EvidenceTask(BaseModel):
+    """The bounded evidence target assigned to one parallel research unit."""
+
+    subquestion: str = Field(min_length=1)
+    language: str = Field(min_length=1)
+    target_source_type: str = Field(min_length=1)
+    evidence_goal: str = Field(min_length=1)
+    query_rationale: str = Field(min_length=1)
 
 
 class ResearchComplete(BaseModel):

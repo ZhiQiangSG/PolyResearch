@@ -12,6 +12,7 @@ from polyresearch.models import (
     SourceRecord,
 )
 from polyresearch.repositories import RunContext
+from polyresearch.security import redact_secrets
 
 
 async def persist_non_tavily_tool_outputs(
@@ -28,7 +29,7 @@ async def persist_non_tavily_tool_outputs(
             run_id=context.run_id,
             provider="runtime_tool",
             tool_name=tool_call["name"],
-            raw_output=str(observation),
+            raw_output=redact_secrets(str(observation)),
         )
         for tool_call, observation in zip(tool_calls, observations)
         if tool_call["name"] != "tavily_search"

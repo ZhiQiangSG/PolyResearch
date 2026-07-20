@@ -4,6 +4,7 @@ from uuid import uuid4
 from polyresearch.models import (
     Claim,
     EvidencePassage,
+    EvidenceLink,
     QueryRecord,
     ReportDraft,
     ReportStatementDraft,
@@ -100,6 +101,40 @@ class ReportQaTests(unittest.TestCase):
             {"unknown_claim_id", "missing_citation", "wording_exceeds_verification_status"},
         )
 
+    def test_creates_a_statement_for_each_sentence_or_displayable_clause(self) -> None:
+        statements = graph_module._build_report_statements(
+            run_id=self.run_id,
+            report_draft=ReportDraft(
+                statements=[
+                    ReportStatementDraft(
+                        rendered_text=(
+                            "The policy changed on 1 January. "
+                            "It applies to new applications; existing applications are excluded."
+                        ),
+                        claim_ids=[self.claim.id],
+                    )
+                ]
+            ),
+            claims=[self.claim],
+            verification_results=[],
+        )
+
+        self.assertEqual(
+            [statement.rendered_text for statement in statements],
+            [
+                "The policy changed on 1 January.",
+                "It applies to new applications;",
+                "existing applications are excluded.",
+            ],
+        )
+        self.assertTrue(all(statement.claim_ids == [self.claim.id] for statement in statements))
+        self.assertTrue(
+            all(
+                statement.verification_status is VerificationStatus.INSUFFICIENT_EVIDENCE
+                for statement in statements
+            )
+        )
+
     def test_blocks_statement_without_discovery_trace(self) -> None:
         statement = ReportStatement(
             run_id=self.run_id,
@@ -118,3 +153,28 @@ class ReportQaTests(unittest.TestCase):
         )
 
         self.assertEqual([issue.code for issue in issues], ["incomplete_discovery_trace"])
+
+    def test_blocks_claim_without_typed_evidence_link(self) -> None:
+        statement = ReportStatement(
+            run_id=self.run_id, rendered_text="The policy changed on 1 January.",
+            claim_ids=[self.claim.id], citation_ids=[self.passage.id],
+            verification_status=VerificationStatus.SUPPORTED,
+        )
+        issues = validate_report_statements(
+            statements=[statement], claims=[self.claim], passages=[self.passage],
+            sources=[self.source], evidence_links=[],
+        )
+        self.assertEqual([issue.code for issue in issues], ["claim_without_typed_evidence_link"])
+
+    def test_flags_unused_bibliography_source(self) -> None:
+        unused_source = SourceRecord(canonical_url="https://example.test/unused", title="Unused")
+        statement = ReportStatement(
+            run_id=self.run_id, rendered_text="The policy changed on 1 January.",
+            claim_ids=[self.claim.id], citation_ids=[self.passage.id],
+            verification_status=VerificationStatus.SUPPORTED,
+        )
+        issues = validate_report_statements(
+            statements=[statement], claims=[self.claim], passages=[self.passage],
+            sources=[self.source, unused_source],
+        )
+        self.assertEqual([issue.code for issue in issues], ["unused_bibliography_source"])

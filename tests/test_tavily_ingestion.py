@@ -84,6 +84,7 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
     async def test_planned_search_is_available_without_bailian(self) -> None:
         tools = await tool_registry.get_all_tools({"configurable": {}})
         self.assertIn("planned_web_search", [tool.name for tool in tools])
+        self.assertNotIn("web_search", [tool.name for tool in tools])
 
     def test_router_selects_bailian_for_chinese_and_tavily_otherwise(self) -> None:
         router = SearchProviderRouter()

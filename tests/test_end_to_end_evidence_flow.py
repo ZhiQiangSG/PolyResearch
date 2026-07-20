@@ -149,6 +149,7 @@ class EndToEndEvidenceFlowTests(unittest.IsolatedAsyncioTestCase):
                 links = await repository.list_evidence_links(run_id)
                 statements = await repository.list_report_statements(run_id)
                 bundles = await repository.list_report_bundles(run_id)
+                traces = await repository.list_trace_records(run_id)
 
                 self.assertEqual(run.id, run_id)
                 self.assertEqual(len(queries), 1)
@@ -163,6 +164,20 @@ class EndToEndEvidenceFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(links[0].passage_id, passages[0].id)
                 self.assertEqual(passages[0].source_id, sources[0].id)
                 self.assertIn(f"[P:{passages[0].id}]", bundles[0].markdown or "")
+                self.assertEqual(
+                    bundles[0].provenance_json["run_configuration"]["model_ids"]["research"],
+                    "qwen3.7-max",
+                )
+                self.assertEqual(
+                    bundles[0].provenance_json["retrieval_timestamps"]["queries"],
+                    [queries[0].executed_at.isoformat()],
+                )
+                report_trace = next(trace for trace in traces if trace.operation == "report_render")
+                self.assertEqual(report_trace.query_ids, [queries[0].id])
+                self.assertEqual(report_trace.report_statement_ids, [statements[0].id])
+                self.assertIn(f"claim:{claims[0].id}", report_trace.graph_artifact_ids)
+                self.assertGreaterEqual(report_trace.latency_ms, 0)
+                self.assertIsNotNone(report_trace.cost_note)
             finally:
                 researcher_module.create_qwen_chat_model = original_factory
                 report_module.create_qwen_chat_model = original_factory

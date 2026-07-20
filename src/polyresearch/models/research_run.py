@@ -15,6 +15,10 @@ class ResearchRun(BaseModel):
     output_language: str = Field(min_length=1)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: Literal["active", "completed", "failed"] = "active"
+    model_ids: dict[str, str] = Field(default_factory=dict)
+    prompt_versions: dict[str, str] = Field(default_factory=dict)
+    provider_routing: dict[str, str] = Field(default_factory=dict)
+    retrieval_started_at: datetime | None = None
 
 
 class ResearchEntity(BaseModel):

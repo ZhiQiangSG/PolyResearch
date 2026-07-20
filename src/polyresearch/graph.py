@@ -4,6 +4,11 @@ from polyresearch.workflows.orchestrator import (
     clarify_with_user,
     graph,
     initialize_research_run,
+    fetch_extract,
+    evidence_ledger,
+    claim_extraction,
+    verification_conflict_loop,
+    report_qa,
     language_gap_analysis,
     multilingual_planner,
     write_research_brief,
@@ -29,7 +34,8 @@ from polyresearch.workflows.supervisor import supervisor, supervisor_subgraph, s
 
 __all__ = [
     "graph", "initialize_research_run", "clarify_with_user", "write_research_brief",
-    "multilingual_planner", "language_gap_analysis", "supervisor", "supervisor_tools",
+    "multilingual_planner", "language_gap_analysis", "fetch_extract", "evidence_ledger",
+    "claim_extraction", "verification_conflict_loop", "report_qa", "supervisor", "supervisor_tools",
     "supervisor_subgraph", "researcher", "researcher_tools", "researcher_subgraph",
     "extract_claims", "translate_claim_evidence", "verify_claim_clusters", "verify_claims", "resolve_conflicts",
     "execute_tool_safely", "unknown_tool_observation", "final_report_generation",

@@ -25,6 +25,7 @@ from polyresearch.models import (
     SourceRecord,
     SourceVersion,
     TranslationRecord,
+    TraceRecord,
     VerificationResult,
 )
 from polyresearch.repositories.base import (
@@ -45,7 +46,7 @@ class SqliteEvidenceRepository(EvidenceRepository):
     Pydantic artifacts and their stable IDs for later graph traversal.
     """
 
-    _MIGRATION_VERSION = 2
+    _MIGRATION_VERSION = 3
     _ARTIFACT_TABLES = (
         "research_plans",
         "query_records",
@@ -108,6 +109,13 @@ class SqliteEvidenceRepository(EvidenceRepository):
             if not attachments_applied:
                 self._create_artifact_table("provenance_attachments")
                 self._connection.execute("INSERT INTO schema_migrations(version) VALUES (2)")
+
+            traces_applied = self._connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = 3"
+            ).fetchone()
+            if not traces_applied:
+                self._create_artifact_table("trace_records")
+                self._connection.execute("INSERT INTO schema_migrations(version) VALUES (3)")
 
     def _create_artifact_table(self, table: str) -> None:
         self._connection.execute(
@@ -393,6 +401,9 @@ class SqliteEvidenceRepository(EvidenceRepository):
         with self._transaction():
             self._append("report_bundles", run_id, bundles)
 
+    async def append_trace_records(self, run_id: UUID, records: Sequence[TraceRecord]) -> None:
+        await self._execute(self._append, "trace_records", run_id, records)
+
     async def list_research_plans(self, run_id: UUID) -> list[ResearchPlan]:
         return await self._execute(self._list, "research_plans", run_id, ResearchPlan)
 
@@ -434,3 +445,6 @@ class SqliteEvidenceRepository(EvidenceRepository):
 
     async def list_report_bundles(self, run_id: UUID) -> list[ReportBundle]:
         return await self._execute(self._list, "report_bundles", run_id, ReportBundle)
+
+    async def list_trace_records(self, run_id: UUID) -> list[TraceRecord]:
+        return await self._execute(self._list, "trace_records", run_id, TraceRecord)

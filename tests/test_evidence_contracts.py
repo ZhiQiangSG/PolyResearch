@@ -160,8 +160,12 @@ class SqliteMigrationTests(unittest.TestCase):
                 attachment_table = repository._connection.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'provenance_attachments'"
                 ).fetchone()
+                trace_table = repository._connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trace_records'"
+                ).fetchone()
 
-                self.assertEqual([row["version"] for row in migrations], [1, 2])
+                self.assertEqual([row["version"] for row in migrations], [1, 2, 3])
                 self.assertIsNotNone(attachment_table)
+                self.assertIsNotNone(trace_table)
             finally:
                 repository.close()

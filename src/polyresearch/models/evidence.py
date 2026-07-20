@@ -185,6 +185,25 @@ class QueryRecord(BaseModel):
     executed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class TraceRecord(BaseModel):
+    """A timed, auditable operation linked to query and graph artifacts."""
+
+    id: UUID = Field(default_factory=uuid4)
+    run_id: UUID
+    operation: str = Field(min_length=1)
+    provider: str | None = None
+    query_ids: list[UUID] = Field(default_factory=list)
+    report_statement_ids: list[UUID] = Field(default_factory=list)
+    graph_artifact_ids: list[str] = Field(default_factory=list)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    latency_ms: float = Field(ge=0)
+    retry_count: int = Field(default=0, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
+    cost_note: str | None = None
+    provider_failure: str | None = None
+
+
 class ProvenanceAttachment(BaseModel):
     """Immutable raw output retained for audit, never as a reasoning artifact."""
 
@@ -384,7 +403,7 @@ class ClaimClusterVerificationResult(BaseModel):
 
 
 class ReportStatement(BaseModel):
-    """A rendered factual report statement linked to verified claims."""
+    """One rendered sentence or displayable factual clause with durable evidence links."""
 
     id: UUID = Field(default_factory=uuid4)
     run_id: UUID
@@ -396,10 +415,24 @@ class ReportStatement(BaseModel):
 
 
 class ReportStatementDraft(BaseModel):
-    """Model-selected report wording that must resolve to known claim IDs."""
+    """One model-selected factual clause that must resolve to known claim IDs."""
 
     rendered_text: str = Field(min_length=1)
     claim_ids: list[UUID] = Field(min_length=1)
+
+
+class ReportOutlineSection(BaseModel):
+    """A claim-bound section selected before any report prose is written."""
+
+    heading: str = Field(min_length=1)
+    claim_ids: list[UUID] = Field(min_length=1)
+
+
+class ReportOutline(BaseModel):
+    """Structured report plan limited to approved verification artifacts."""
+
+    title: str = Field(default="Research report", min_length=1)
+    sections: list[ReportOutlineSection] = Field(default_factory=list)
 
 
 class ReportDraft(BaseModel):

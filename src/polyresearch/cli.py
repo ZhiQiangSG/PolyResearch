@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from langchain_core.messages import HumanMessage
@@ -39,6 +40,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-statement-id",
         metavar="STATEMENT_ID",
         help="Required with --inspect-trace; identifies the report statement UUID.",
+    )
+    parser.add_argument(
+        "--export",
+        metavar="RUN_ID",
+        help="Export the latest ReportBundle for a run as Markdown, HTML, and/or JSON.",
+    )
+    parser.add_argument(
+        "--format",
+        default="markdown,html,json",
+        help="Comma-separated export formats: markdown, html, json (default: all).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=".",
+        help="Directory for --export output files (default: current directory).",
     )
     return parser
 
@@ -181,10 +197,77 @@ async def inspect_report_trace(run_id: str, report_statement_id: str) -> str:
         repository.close()
 
 
+async def export_report_bundle(
+    repository, run_id: UUID, output_dir: Path, formats: set[str]
+) -> dict[str, str]:
+    """Write the latest stable ReportBundle without introducing PDF/DOCX output."""
+    supported_formats = {"markdown", "html", "json"}
+    unsupported = formats - supported_formats
+    if unsupported:
+        raise ValueError(
+            "Unsupported report export format(s): "
+            + ", ".join(sorted(unsupported))
+            + ". PDF and DOCX exports are intentionally deferred until the evidence bundle is stable."
+        )
+    if not formats:
+        raise ValueError("At least one report export format is required.")
+    bundles = await repository.list_report_bundles(run_id)
+    if not bundles:
+        raise ValueError(f"No ReportBundle exists for run {run_id}")
+    bundle = max(bundles, key=lambda item: (item.created_at, str(item.id)))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    basename = f"polyresearch-report-{run_id}"
+    payloads = {
+        "markdown": (f"{basename}.md", bundle.markdown or ""),
+        "html": (f"{basename}.html", bundle.html or ""),
+        "json": (
+            f"{basename}.json",
+            json.dumps(bundle.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        ),
+    }
+    missing = [format_name for format_name in formats if not payloads[format_name][1]]
+    if missing:
+        raise ValueError(
+            "ReportBundle has no " + ", ".join(sorted(missing)) + " representation to export."
+        )
+    exported = {}
+    for format_name in sorted(formats):
+        filename, content = payloads[format_name]
+        target = output_dir / filename
+        target.write_text(content, encoding="utf-8")
+        exported[format_name] = str(target)
+    return exported
+
+
+async def export_report(run_id: str, output_dir: str, formats: str) -> dict[str, str]:
+    """Open the local ledger and export one run's latest report bundle."""
+    from polyresearch.repositories import SqliteEvidenceRepository
+
+    repository = SqliteEvidenceRepository(
+        os.environ.get("POLYRESEARCH_DB_PATH", "polyresearch.db")
+    )
+    try:
+        requested_formats = {
+            item.strip().lower() for item in formats.split(",") if item.strip()
+        }
+        return await export_report_bundle(
+            repository, UUID(run_id), Path(output_dir), requested_formats
+        )
+    finally:
+        repository.close()
+
+
 def main() -> None:
     """Run the CLI, displaying help when no research question is provided."""
     parser = build_parser()
     args = parser.parse_args()
+    if args.export:
+        try:
+            result = asyncio.run(export_report(args.export, args.output_dir, args.format))
+            print(json.dumps(result, indent=2))
+        except (ValueError, LookupError) as error:
+            parser.error(str(error))
+        return
     if args.inspect_trace:
         if not args.report_statement_id:
             parser.error("--inspect-trace requires --report-statement-id")

@@ -16,7 +16,9 @@ from tavily import AsyncTavilyClient
 from polyresearch.retrieval.deduplication import deduplicate_source_artifacts
 from polyresearch.models import EvidencePassage, ProvenanceAttachment, QueryRecord, SourceRecord, SourceVersion
 from polyresearch.runtime.model_utils import get_tavily_api_key
+from polyresearch.configuration import Configuration
 from polyresearch.repositories import RunContext
+from polyresearch.security import is_allowed_domain, redact_secrets
 from polyresearch.retrieval.source_ingestion import extract_document, fetch_source_content, languages_match
 from polyresearch.retrieval.source_quality import score_initial_source_quality
 
@@ -102,12 +104,19 @@ async def tavily_search(
     
     # Step 2: Deduplicate results by URL to avoid processing the same content multiple times.
     unique_results = {}
+    security = Configuration.from_runnable_config(config)
     for response in search_results:
         for result in response['results']:
             discovered_url = result['url']
             try:
                 canonical_url = canonicalize_url(discovered_url)
             except ValueError:
+                continue
+            if not is_allowed_domain(
+                canonical_url,
+                allowed=security.allowed_source_domains,
+                blocked=security.blocked_source_domains,
+            ):
                 continue
             if canonical_url not in unique_results:
                 unique_results[canonical_url] = {
@@ -193,7 +202,10 @@ async def tavily_search(
             source_id=source.id,
             version_number=1,
             content_hash=content_hash,
-            raw_content=original_text,
+            raw_content=(
+                original_text if security.retain_raw_source_content
+                else "[REDACTED_BY_RETENTION_POLICY]"
+            ),
             http_metadata=http_metadata,
             extraction_method=extraction_method,
             extraction_quality=document.extraction_quality,
@@ -372,6 +384,8 @@ async def _persist_tavily_ingestion(
         return
 
     raw_output = json.dumps(search_results, ensure_ascii=False, sort_keys=True, default=str)
+    if Configuration.from_runnable_config(config).redact_persisted_secrets:
+        raw_output = redact_secrets(raw_output)
     query_records = []
     for response in search_results:
         for result_rank, result in enumerate(response.get("results", []), start=1):
@@ -400,17 +414,18 @@ async def _persist_tavily_ingestion(
                 )
             )
     await context.repository.append_query_records(context.run_id, query_records)
-    await context.repository.append_provenance_attachments(
-        context.run_id,
-        [
-            ProvenanceAttachment(
-                run_id=context.run_id,
-                provider="tavily",
-                tool_name="tavily_search",
-                raw_output=raw_output,
-            )
-        ],
-    )
+    if Configuration.from_runnable_config(config).retain_raw_tool_output:
+        await context.repository.append_provenance_attachments(
+            context.run_id,
+            [
+                ProvenanceAttachment(
+                    run_id=context.run_id,
+                    provider="tavily",
+                    tool_name="tavily_search",
+                    raw_output=raw_output,
+                )
+            ],
+        )
     await context.repository.append_sources(context.run_id, sources)
     await context.repository.append_source_versions(context.run_id, source_versions)
     await context.repository.append_passages(context.run_id, passages)
@@ -466,4 +481,3 @@ async def tavily_search_async(
     # Execute all search queries in parallel and return results
     search_results = await asyncio.gather(*search_tasks)
     return search_results
-

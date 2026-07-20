@@ -23,6 +23,7 @@ from polyresearch.models.evidence import (
     VerificationResult,
 )
 from polyresearch.models.research_run import LanguageExpansionDecision, ResearchPlan
+from polyresearch.models.structured_outputs import EvidenceTask
 
 
 def override_reducer(current_value, new_value):
@@ -84,6 +85,7 @@ class ResearcherState(TypedDict):
     tool_call_iterations: int = 0
     conflict_resolution_attempted: bool
     research_topic: str
+    evidence_task: EvidenceTask
     research_unit_id: UUID
     sources: Annotated[list[SourceRecord], merge_evidence_by_id]
     passages: Annotated[list[EvidencePassage], merge_evidence_by_id]

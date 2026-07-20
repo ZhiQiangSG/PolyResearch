@@ -66,9 +66,11 @@ class SupervisorLimitTests(unittest.IsolatedAsyncioTestCase):
         class FakeResearcherSubgraph:
             def __init__(self) -> None:
                 self.unit_ids = []
+                self.tasks = []
 
             async def ainvoke(self, state, config):
                 self.unit_ids.append(config["configurable"]["research_unit_id"])
+                self.tasks.append(state["evidence_task"])
                 return {
                     "sources": [],
                     "passages": [],
@@ -88,12 +90,12 @@ class SupervisorLimitTests(unittest.IsolatedAsyncioTestCase):
                             tool_calls=[
                                 {
                                     "name": "ConductResearch",
-                                    "args": {"research_topic": "Topic A"},
+                                    "args": {"task": {"subquestion": "Topic A", "language": "en", "target_source_type": "official", "evidence_goal": "Find a citable official statement.", "query_rationale": "Primary evidence."}},
                                     "id": "call-a",
                                 },
                                 {
                                     "name": "ConductResearch",
-                                    "args": {"research_topic": "Topic B"},
+                                    "args": {"task": {"subquestion": "Topic B", "language": "en", "target_source_type": "official", "evidence_goal": "Find a citable official statement.", "query_rationale": "Primary evidence."}},
                                     "id": "call-b",
                                 },
                             ],
@@ -106,6 +108,7 @@ class SupervisorLimitTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(len(fake_subgraph.unit_ids), 2)
             self.assertEqual(len(set(fake_subgraph.unit_ids)), 2)
+            self.assertTrue(all(task.target_source_type == "official" for task in fake_subgraph.tasks))
         finally:
             supervisor_module.researcher_subgraph = original_subgraph
 

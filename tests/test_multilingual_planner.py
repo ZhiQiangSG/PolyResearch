@@ -236,7 +236,15 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(plan.run_id, run.id)
                 self.assertEqual(plan.model_id, "qwen3.7-max")
                 self.assertEqual(plan.prompt_version, "multilingual_planner_v1")
-                self.assertEqual(result.goto, "research_supervisor")
+                self.assertEqual(
+                    plan.metadata["run_configuration"]["selected_languages"][0]["query_budget"],
+                    3,
+                )
+                self.assertEqual(
+                    plan.metadata["run_configuration"]["provider_routing"]["zh"],
+                    "bailian_web_search",
+                )
+                self.assertEqual(result.goto, "provider_routed_discovery")
                 self.assertEqual(result.update["research_plan"], plan)
                 self.assertIn("政策X", result.update["supervisor_messages"]["value"][1].content)
                 self.assertIn("ResearchBrief", stub.messages[0].content)
@@ -301,7 +309,7 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                     {"configurable": {"run_id": str(run.id), "evidence_repository": repository}},
                 )
                 plans = await repository.list_research_plans(run.id)
-                self.assertEqual(result.goto, "final_report_generation")
+                self.assertEqual(result.goto, "report_composition")
                 self.assertTrue(result.update["language_gap_reviewed"])
                 self.assertEqual(len(plans), 2)
                 self.assertFalse(plans[-1].post_retrieval_decision.should_add_languages)

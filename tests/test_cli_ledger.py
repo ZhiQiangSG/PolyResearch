@@ -1,13 +1,19 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from polyresearch.cli import build_ledger_inspection, build_report_trace_inspection
+from polyresearch.cli import (
+    build_ledger_inspection,
+    build_report_trace_inspection,
+    export_report_bundle,
+)
 from polyresearch.models import (
     Claim,
     EvidencePassage,
     QueryRecord,
+    ReportBundle,
     ReportStatement,
     ResearchRun,
     SourceRecord,
@@ -18,6 +24,35 @@ from polyresearch.repositories import SqliteEvidenceRepository
 
 
 class LedgerInspectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exports_latest_bundle_as_markdown_html_and_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            output_dir = Path(directory) / "exports"
+            run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
+            bundle = ReportBundle(
+                run_id=run.id,
+                markdown="# Report\n",
+                html="<h1>Report</h1>",
+                provenance_json={"format": "polyresearch-markdown-provenance-v1"},
+            )
+            try:
+                await repository.create_run(run)
+                await repository.append_report_bundles(run.id, [bundle])
+
+                exported = await export_report_bundle(
+                    repository, run.id, output_dir, {"markdown", "html", "json"}
+                )
+
+                self.assertEqual(set(exported), {"markdown", "html", "json"})
+                self.assertEqual(Path(exported["markdown"]).read_text(), bundle.markdown)
+                self.assertEqual(Path(exported["html"]).read_text(), bundle.html)
+                payload = json.loads(Path(exported["json"]).read_text())
+                self.assertEqual(payload["provenance_json"], bundle.provenance_json)
+                with self.assertRaisesRegex(ValueError, "PDF and DOCX"):
+                    await export_report_bundle(repository, run.id, output_dir, {"pdf"})
+            finally:
+                repository.close()
+
     async def test_inspection_resolves_source_to_passages_translations_queries_and_claims(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")

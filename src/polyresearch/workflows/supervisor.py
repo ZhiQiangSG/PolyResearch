@@ -11,7 +11,7 @@ from langgraph.graph import START, StateGraph
 from langgraph.types import Command
 
 from polyresearch.configuration import Configuration
-from polyresearch.models import ConductResearch, ResearchComplete, SupervisorState
+from polyresearch.models import ConductResearch, EvidenceTask, ResearchComplete, SupervisorState
 from polyresearch.nodes.provenance import researcher_evidence_summary as _researcher_evidence_summary
 from polyresearch.workflows.researcher import researcher_subgraph
 from polyresearch.runtime.model_utils import create_qwen_chat_model
@@ -130,15 +130,18 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             overflow_conduct_research_calls = conduct_research_calls[configurable.max_concurrent_research_units:]
             
             # Execute research tasks in parallel
-            research_units = [
-                (tool_call, uuid4()) for tool_call in allowed_conduct_research_calls
-            ]
+            research_units = []
+            for tool_call in allowed_conduct_research_calls:
+                task = EvidenceTask.model_validate(tool_call["args"]["task"])
+                _validate_evidence_task(task, state.get("research_plan"))
+                research_units.append((tool_call, task, uuid4()))
             research_tasks = [
                 researcher_subgraph.ainvoke({
                     "researcher_messages": [
-                        HumanMessage(content=tool_call["args"]["research_topic"])
+                        HumanMessage(content=task.model_dump_json())
                     ],
-                    "research_topic": tool_call["args"]["research_topic"],
+                    "research_topic": task.subquestion,
+                    "evidence_task": task,
                     "research_unit_id": research_unit_id,
                 }, {
                     **config,
@@ -148,7 +151,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                         "research_plan": state.get("research_plan"),
                     },
                 })
-                for tool_call, research_unit_id in research_units
+                for tool_call, task, research_unit_id in research_units
             ]
             
             tool_results = await asyncio.gather(*research_tasks, return_exceptions=True)
@@ -196,6 +199,19 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
         goto="supervisor",
         update=update_payload
     ) 
+
+
+def _validate_evidence_task(task: EvidenceTask, plan) -> None:
+    """Keep delegated work inside the selected language/source-type evidence plan."""
+    if plan is None:
+        return
+    planned_language = next(
+        (item for item in plan.ranked_languages if item.language == task.language), None
+    )
+    if planned_language is None:
+        raise ValueError("Evidence task language is not selected by the research plan")
+    if task.target_source_type not in planned_language.expected_source_types:
+        raise ValueError("Evidence task source type is not selected for its language")
 
 
 

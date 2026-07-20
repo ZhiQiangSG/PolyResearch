@@ -4,6 +4,7 @@ import re
 
 from polyresearch.models import (
     Claim,
+    EvidenceLink,
     EvidencePassage,
     QueryRecord,
     ReportQaIssue,
@@ -26,6 +27,7 @@ def validate_report_statements(
     passages: list[EvidencePassage],
     sources: list[SourceRecord],
     queries: list[QueryRecord] | None = None,
+    evidence_links: list[EvidenceLink] | None = None,
 ) -> list[ReportQaIssue]:
     """Return blocking integrity errors and conservative wording warnings."""
     claim_ids = {claim.id for claim in claims}
@@ -33,6 +35,10 @@ def validate_report_statements(
     passages_by_id = {passage.id: passage for passage in passages}
     sources_by_id = {source.id: source for source in sources}
     source_ids = {source.id for source in sources}
+    linked_passages_by_claim: dict = {}
+    if evidence_links is not None:
+        for link in evidence_links:
+            linked_passages_by_claim.setdefault(link.claim_id, set()).add(link.passage_id)
     query_urls = (
         {query.result_url for query in queries if query.result_url}
         if queries is not None
@@ -59,6 +65,32 @@ def validate_report_statements(
                     message="Statement has no passage-level citation IDs.",
                 )
             )
+        known_statement_claims = set(statement.claim_ids) & claim_ids
+        expected_passages = {
+            passage_id
+            for claim_id in known_statement_claims
+            for passage_id in claims_by_id[claim_id].evidence_passage_ids
+        }
+        if known_statement_claims and not expected_passages:
+            issues.append(
+                ReportQaIssue(
+                    code="claim_without_evidence_passage",
+                    severity="error",
+                    statement_id=statement.id,
+                    message="Statement claim has no evidence-passage link.",
+                )
+            )
+        if evidence_links is not None:
+            for claim_id in known_statement_claims:
+                if not linked_passages_by_claim.get(claim_id):
+                    issues.append(
+                        ReportQaIssue(
+                            code="claim_without_typed_evidence_link",
+                            severity="error",
+                            statement_id=statement.id,
+                            message="Statement claim has no typed evidence link.",
+                        )
+                    )
         for citation_id in statement.citation_ids:
             passage = passages_by_id.get(citation_id)
             if passage is None:
@@ -77,6 +109,15 @@ def validate_report_statements(
                         severity="error",
                         statement_id=statement.id,
                         message=f"Citation {citation_id} resolves to a passage without a source.",
+                    )
+                )
+            elif known_statement_claims and citation_id not in expected_passages:
+                issues.append(
+                    ReportQaIssue(
+                        code="citation_not_linked_to_claim",
+                        severity="error",
+                        statement_id=statement.id,
+                        message="Citation is not one of the statement claim's evidence passages.",
                     )
                 )
         if query_urls is not None:
@@ -120,4 +161,23 @@ def validate_report_statements(
                     ),
                 )
             )
+    if not any(issue.severity == "error" for issue in issues):
+        cited_source_ids = {
+            passage.source_id
+            for statement in statements
+            for passage_id in statement.citation_ids
+            if (passage := passages_by_id.get(passage_id)) is not None
+        }
+        for source in sources:
+            if source.id not in cited_source_ids:
+                issues.append(
+                    ReportQaIssue(
+                        code="unused_bibliography_source",
+                        severity="warning",
+                        message=(
+                            f"Source '{source.title}' appears in the bibliography but is not "
+                            "used by any report statement."
+                        ),
+                    )
+                )
     return issues

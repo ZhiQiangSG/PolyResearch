@@ -31,5 +31,9 @@ class RunContextTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(command.update["run_id"], run_id)
                 self.assertEqual(run.question, "Human: Research this topic.")
                 self.assertEqual(run.output_language, "en")
+                self.assertEqual(run.model_ids["research"], "qwen3.7-max")
+                self.assertEqual(run.prompt_versions["report_prose"], "report_prose_generation_v1")
+                self.assertEqual(run.provider_routing["zh"], "bailian_web_search")
+                self.assertIsNotNone(run.retrieval_started_at)
             finally:
                 repository.close()

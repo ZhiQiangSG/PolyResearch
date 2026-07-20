@@ -35,6 +35,8 @@ from polyresearch.runtime.model_utils import create_qwen_chat_model
 from polyresearch.retrieval.search_utils import select_citable_passages
 from polyresearch.runtime.text_utils import get_today_str
 from polyresearch.runtime.tool_registry import get_all_tools
+from polyresearch.runtime.retry import retry_async
+from polyresearch.security import redact_prompt_injection
 from polyresearch.evidence.value_normalization import normalize_claim_values
 from polyresearch.retrieval.search_providers import planned_web_search
 
@@ -42,7 +44,7 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     """Individual researcher that conducts focused research on specific topics.
     
     This researcher is given a specific research topic by the supervisor and uses
-    available tools (search, think_tool, MCP tools) to gather comprehensive information.
+    available routed search and reflection tools to gather comprehensive information.
     It can use think_tool for strategic planning between searches.
     
     Args:
@@ -61,7 +63,7 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     if len(tools) == 0:
         raise ValueError(
             "No tools found to conduct research: Please configure either your "
-            "search API or add MCP tools to your configuration."
+            "search provider configuration."
         )
     
     # Step 2: Configure the researcher model with tools
@@ -73,6 +75,9 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     )
     
     researcher_prompt = research_system_prompt.format(date=get_today_str())
+    evidence_task = state.get("evidence_task")
+    if evidence_task is not None:
+        researcher_prompt += "\n\n<EvidenceTask>\n" + evidence_task.model_dump_json() + "\n</EvidenceTask>"
     
     # Configure model with tools, retry logic, and settings
     research_model = (
@@ -98,7 +103,11 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
 async def execute_tool_safely(tool, args, config):
     """Safely execute a tool with error handling."""
     try:
-        return await tool.ainvoke(args, config)
+        configurable = Configuration.from_runnable_config(config)
+        return await retry_async(
+            lambda: tool.ainvoke(args, config),
+            attempts=configurable.max_structured_output_retries,
+        )
     except Exception as e:
         return f"Error executing tool: {str(e)}"
 
@@ -116,9 +125,8 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     
     This function handles various types of researcher tool calls:
     1. think_tool - Strategic reflection that continues the research conversation
-    2. Search tools (tavily_search, web_search) - Information gathering
-    3. MCP tools - External tool integrations
-    4. ResearchComplete - Signals completion of individual research task
+    2. planned_web_search - Provider-routed evidence discovery
+    3. ResearchComplete - Signals completion of individual research task
     
     Args:
         state: Current researcher state with messages and iteration count
@@ -138,7 +146,7 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     if not has_tool_calls:
         return Command(goto="extract_claims")
     
-    # Step 2: Handle other tool calls (search, MCP tools, etc.)
+    # Step 2: Handle routed search and completion tool calls.
     tools = await get_all_tools(config)
     tools_by_name = {
         tool.name if hasattr(tool, "name") else tool.get("name", "web_search"): tool 
@@ -199,15 +207,21 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
         Typed source, passage, claim, and verification-result collections
     """
     # Step 1: Load citable source passages from the durable evidence ledger.
-    context, sources, passages, _, _, _ = await _load_evidence_ledger(config)
+    context, sources, passages, existing_claims, _, _ = await _load_evidence_ledger(config)
     selected_passages = select_citable_passages(
         sources, passages, state.get("research_topic", "")
     )
+    extracted_passage_ids = {
+        passage_id for claim in existing_claims for passage_id in claim.evidence_passage_ids
+    }
+    selected_passages = [
+        passage for passage in selected_passages if passage.id not in extracted_passage_ids
+    ]
     if not selected_passages:
         return {
             "sources": sources,
             "passages": passages,
-            "claims": [],
+            "claims": existing_claims,
             "verification_results": [],
         }
 
@@ -237,7 +251,10 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
         {
             "sources": _serialize_artifacts(sources, SourceRecord),
             "output_language": config.get("configurable", {}).get("output_language", "en"),
-            "passages": _serialize_artifacts(selected_passages, EvidencePassage),
+            "passages": [
+                passage.model_copy(update={"text": redact_prompt_injection(passage.text)}).model_dump(mode="json")
+                for passage in selected_passages
+            ],
         },
         ensure_ascii=False,
     )

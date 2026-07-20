@@ -17,6 +17,7 @@ from polyresearch.models import (
     SourceRecord,
     SourceVersion,
     TranslationRecord,
+    TraceRecord,
     VerificationResult,
 )
 
@@ -121,6 +122,10 @@ class EvidenceRepository(ABC):
         """Persist exported Markdown, HTML, and provenance report bundles."""
 
     @abstractmethod
+    async def append_trace_records(self, run_id: UUID, records: Sequence[TraceRecord]) -> None:
+        """Persist timed query-to-report execution traces."""
+
+    @abstractmethod
     async def list_research_plans(self, run_id: UUID) -> list[ResearchPlan]:
         """List planning decisions for a run in persistence order."""
 
@@ -171,3 +176,7 @@ class EvidenceRepository(ABC):
     @abstractmethod
     async def list_report_bundles(self, run_id: UUID) -> list[ReportBundle]:
         """List exported report bundles for a run."""
+
+    @abstractmethod
+    async def list_trace_records(self, run_id: UUID) -> list[TraceRecord]:
+        """List durable execution traces for a run."""

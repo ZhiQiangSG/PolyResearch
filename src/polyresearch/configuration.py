@@ -85,6 +85,13 @@ class Configuration(BaseModel):
     # Research Configuration
     max_researcher_iterations: int = Field(default=3)
     max_react_tool_calls: int = Field(default=5)
+    max_queries_per_run: int = Field(default=20, ge=1, le=200)
+    max_source_fetches_per_run: int = Field(default=50, ge=1, le=500)
+    allowed_source_domains: list[str] = Field(default_factory=list)
+    blocked_source_domains: list[str] = Field(default_factory=list)
+    retain_raw_tool_output: bool = Field(default=True)
+    retain_raw_source_content: bool = Field(default=True)
+    redact_persisted_secrets: bool = Field(default=True)
 
     # Model Configuration
     model_provider: ModelProvider = Field(default=ModelProvider.QWEN_OPENAI_COMPATIBLE)

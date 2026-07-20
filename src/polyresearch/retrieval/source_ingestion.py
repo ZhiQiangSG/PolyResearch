@@ -13,6 +13,8 @@ from urllib.parse import urljoin
 
 import aiohttp
 
+from polyresearch.runtime.retry import retry_async
+
 
 _SPACE = re.compile(r"\s+")
 
@@ -230,22 +232,21 @@ def extract_document(content: str, *, content_type: str | None = None) -> Extrac
 
 async def fetch_source_content(url: str, *, timeout_seconds: float = 15.0) -> ExtractedDocument:
     """Fetch a discovered URL and retain HTTP provenance alongside extracted text."""
-    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-    headers = {"User-Agent": "PolyResearch/0.1 evidence fetcher"}
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(url, allow_redirects=True) as response:
-            raw_content = await response.text(errors="replace")
-            document = extract_document(raw_content, content_type=response.headers.get("Content-Type"))
-            chain = [str(item.url) for item in response.history] + [str(response.url)]
-            metadata = {
-                "status": response.status,
-                "content_type": response.headers.get("Content-Type"),
-                "content_length": response.headers.get("Content-Length"),
-                "etag": response.headers.get("ETag"),
-                "last_modified": response.headers.get("Last-Modified"),
-                "final_url": str(response.url),
-                "redirect_chain": chain,
-            }
-            return ExtractedDocument(
-                **{**document.__dict__, "canonical_url": document.canonical_url and urljoin(str(response.url), document.canonical_url), "http_metadata": metadata, "extraction_method": "direct_http_fetch"}
-            )
+    async def fetch_once() -> ExtractedDocument:
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        headers = {"User-Agent": "PolyResearch/0.1 evidence fetcher"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, allow_redirects=True) as response:
+                raw_content = await response.text(errors="replace")
+                document = extract_document(raw_content, content_type=response.headers.get("Content-Type"))
+                chain = [str(item.url) for item in response.history] + [str(response.url)]
+                metadata = {
+                    "status": response.status, "content_type": response.headers.get("Content-Type"),
+                    "content_length": response.headers.get("Content-Length"), "etag": response.headers.get("ETag"),
+                    "last_modified": response.headers.get("Last-Modified"), "final_url": str(response.url),
+                    "redirect_chain": chain,
+                }
+                return ExtractedDocument(
+                    **{**document.__dict__, "canonical_url": document.canonical_url and urljoin(str(response.url), document.canonical_url), "http_metadata": metadata, "extraction_method": "direct_http_fetch"}
+                )
+    return await retry_async(fetch_once, attempts=3)  # type: ignore[return-value]

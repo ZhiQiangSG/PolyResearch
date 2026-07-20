@@ -345,6 +345,9 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 await repository.append_sources(run.id, [source])
                 await repository.append_passages(run.id, [passage])
                 await repository.append_claims(run.id, [claim])
+                await repository.append_evidence_links(run.id, [EvidenceLink(
+                    claim_id=claim.id, passage_id=passage.id, relationship="supports",
+                )])
                 await repository.append_query_records(
                     run.id,
                     [
@@ -374,7 +377,25 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(statements[0].claim_ids, [claim.id])
                 self.assertEqual(statements[0].citation_ids, [passage.id])
                 self.assertIn(f"[P:{passage.id}]", result["final_report"])
+                self.assertIn("## Findings supported by evidence", result["final_report"])
+                self.assertIn("## Conflicting or uncertain claims", result["final_report"])
+                self.assertIn("## Language coverage and source mix", result["final_report"])
+                self.assertIn("## Method, retrieval date, and limitations", result["final_report"])
+                self.assertIn("## Complete sources", result["final_report"])
+                self.assertIn("## Citation provenance", result["final_report"])
                 self.assertEqual(bundles[0].markdown, result["final_report"])
+                self.assertEqual(
+                    bundles[0].provenance_json["format"],
+                    "polyresearch-markdown-provenance-v1",
+                )
+                self.assertEqual(
+                    bundles[0].provenance_json["citations"][f"P:{passage.id}"]["id"],
+                    str(passage.id),
+                )
+                self.assertEqual(
+                    bundles[0].provenance_json["statements"][0]["claim_ids"],
+                    [str(claim.id)],
+                )
                 self.assertTrue(bundles[0].qa_passed)
                 self.assertEqual(
                     bundles[0].qa_issues[0].code,

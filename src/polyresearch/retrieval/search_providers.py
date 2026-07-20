@@ -3,7 +3,9 @@
 import asyncio
 import hashlib
 import json
+from datetime import datetime, timezone
 from dataclasses import dataclass
+from time import perf_counter
 from urllib.parse import urljoin
 
 from langchain_core.runnables import RunnableConfig
@@ -17,8 +19,12 @@ from polyresearch.models import (
     ResearchPlan,
     SourceRecord,
     SourceVersion,
+    TraceRecord,
 )
 from polyresearch.repositories import RunContext
+from polyresearch.security import redact_secrets
+
+_BAILIAN_LAST_REQUEST_AT: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,13 @@ class BailianWebSearchProvider:
         bailian = Configuration.from_runnable_config(config).bailian_web_search
         if bailian is None:  # Defensive guard; the loader already checks this.
             raise ToolException("Bailian Web Search is not configured.")
+        loop = asyncio.get_running_loop()
+        minimum_interval = 1 / bailian.max_requests_per_second
+        last_request = _BAILIAN_LAST_REQUEST_AT.get(str(config.get("configurable", {}).get("run_id")), 0)
+        wait_seconds = minimum_interval - (loop.time() - last_request)
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+        _BAILIAN_LAST_REQUEST_AT[str(config.get("configurable", {}).get("run_id"))] = loop.time()
         result = await asyncio.wait_for(
             tools[0].ainvoke({"query": request.query}, config=config),
             timeout=bailian.timeout_seconds,
@@ -176,7 +189,7 @@ async def _persist_bailian_ingestion(
                 run_id=context.run_id,
                 provider="bailian_web_search",
                 tool_name="web_search",
-                raw_output=raw_output,
+                raw_output=redact_secrets(raw_output),
             )
         ],
     )
@@ -393,6 +406,14 @@ async def planned_web_search(
     """Search only a language and source type selected by the multilingual plan."""
     if config is None:
         raise ToolException("Discovery requires runtime configuration.")
+    context = RunContext.from_runnable_config(config)
+    configurable = Configuration.from_runnable_config(config)
+    existing_queries = await context.repository.list_query_records(context.run_id)
+    if len(existing_queries) >= configurable.max_queries_per_run:
+        raise ToolException("Query budget exhausted for this research run.")
+    existing_sources = await context.repository.list_sources(context.run_id)
+    if len(existing_sources) >= configurable.max_source_fetches_per_run:
+        raise ToolException("Source-fetch budget exhausted for this research run.")
     request = SearchRequest(
         query=query,
         language=language,
@@ -402,6 +423,39 @@ async def planned_web_search(
         date_to=date_to,
         rationale=query_rationale,
     )
-    return await SearchProviderRouter().search(
-        request, _research_plan_from_config(config), config
-    )
+    plan = _research_plan_from_config(config)
+    router = SearchProviderRouter()
+    provider = router.route(request, plan)
+    started_at = datetime.now(timezone.utc)
+    started = perf_counter()
+    try:
+        result = await router.search(request, plan, config)
+        failure = None
+    except Exception as error:
+        result = None
+        failure = str(error)
+    try:
+        context = RunContext.from_runnable_config(config)
+        records = await context.repository.list_query_records(context.run_id)
+        matching = [
+            record for record in records
+            if record.query == query and record.language == language
+        ]
+        await context.repository.append_trace_records(context.run_id, [TraceRecord(
+            run_id=context.run_id,
+            operation="provider_routed_discovery",
+            provider=provider.name,
+            query_ids=[record.id for record in matching],
+            graph_artifact_ids=[f"query:{record.id}" for record in matching],
+            started_at=started_at,
+            completed_at=datetime.now(timezone.utc),
+            latency_ms=(perf_counter() - started) * 1000,
+            retry_count=0,
+            cost_note="Search-provider cost is not supplied by the provider API.",
+            provider_failure=failure or next((record.failure for record in matching if record.failure), None),
+        )])
+    except ValueError:
+        pass
+    if failure is not None:
+        raise ToolException(failure)
+    return result
