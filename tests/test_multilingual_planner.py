@@ -4,7 +4,13 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from polyresearch.models import ResearchEntity, ResearchLanguage, ResearchPlan, ResearchRun
+from polyresearch.models import (
+    AtomicSubquestion,
+    ResearchEntity,
+    ResearchLanguage,
+    ResearchPlan,
+    ResearchRun,
+)
 from polyresearch.repositories import SqliteEvidenceRepository
 
 graph_module = importlib.import_module("polyresearch.graph")
@@ -28,13 +34,42 @@ class _PlannerStub:
 
 
 class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
+    def test_plan_requires_atomic_subquestions_and_queries_for_ranked_languages(self):
+        with self.assertRaises(ValueError):
+            ResearchPlan(
+                run_id=uuid4(),
+                subquestions=[
+                    AtomicSubquestion(
+                        question="What changed?", answer_scope="Identify the change."
+                    )
+                ],
+                ranked_languages=[
+                    ResearchLanguage(
+                        language="zh",
+                        priority=1,
+                        query_budget=1,
+                        expected_unique_value="Official records.",
+                        selection_rationale="The policy was issued in China.",
+                    )
+                ],
+                language_rationale={"zh": "Primary records."},
+            )
+
+        with self.assertRaises(ValueError):
+            AtomicSubquestion(question="What changed?", answer_scope="Scope", extra="no")
+
     async def test_planner_persists_plan_and_initializes_supervisor_with_it(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")
             run = ResearchRun(id=uuid4(), question="How did a policy change?", output_language="en")
             model_plan = ResearchPlan(
                 run_id=uuid4(),
-                subquestions=["What changed?"],
+                subquestions=[
+                    AtomicSubquestion(
+                        question="What changed?",
+                        answer_scope="Identify the policy changes and effective dates.",
+                    )
+                ],
                 entities=[ResearchEntity(canonical_name="Policy X", native_script_variants=["政策X"])],
                 ranked_languages=[
                     ResearchLanguage(

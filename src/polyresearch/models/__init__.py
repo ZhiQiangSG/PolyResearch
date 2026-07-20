@@ -33,6 +33,7 @@ from polyresearch.models.structured_outputs import (
     ResearchQuestion,
 )
 from polyresearch.models.research_run import (
+    AtomicSubquestion,
     ResearchEntity,
     ResearchLanguage,
     ResearchPlan,
@@ -41,6 +42,7 @@ from polyresearch.models.research_run import (
 
 __all__ = [
     "AgentInputState",
+    "AtomicSubquestion",
     "AgentState",
     "Claim",
     "ClaimExtractionResult",

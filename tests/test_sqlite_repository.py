@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from polyresearch.models import (
+    AtomicSubquestion,
     Claim,
     EvidenceLink,
     EvidencePassage,
@@ -12,6 +13,7 @@ from polyresearch.models import (
     ReportBundle,
     ReportStatement,
     ResearchPlan,
+    ResearchLanguage,
     ResearchRun,
     SourceRecord,
     SourceVersion,
@@ -51,8 +53,24 @@ class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 run = ResearchRun(question="What changed?", output_language="en")
                 plan = ResearchPlan(
                     run_id=run.id,
-                    subquestions=["What changed?"],
+                    subquestions=[
+                        AtomicSubquestion(
+                            question="What changed?",
+                            answer_scope="Identify the policy change.",
+                        )
+                    ],
+                    ranked_languages=[
+                        ResearchLanguage(
+                            language="en",
+                            priority=1,
+                            query_budget=2,
+                            expected_unique_value="Primary source coverage.",
+                            selection_rationale="The requested output is English.",
+                            expected_source_types=["official"],
+                        )
+                    ],
                     language_rationale={"en": "Primary source language"},
+                    query_variants={"en": ["policy update"]},
                 )
                 query = QueryRecord(
                     run_id=run.id,
