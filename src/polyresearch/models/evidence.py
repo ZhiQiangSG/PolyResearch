@@ -169,6 +169,15 @@ class ReportDraft(BaseModel):
     statements: list[ReportStatementDraft] = Field(default_factory=list)
 
 
+class ReportQaIssue(BaseModel):
+    """A deterministic report-integrity finding produced before rendering."""
+
+    code: str
+    severity: Literal["error", "warning"]
+    message: str
+    statement_id: UUID | None = None
+
+
 class ReportBundle(BaseModel):
     """The exported, auditable report artifacts for one research run."""
 
@@ -177,6 +186,8 @@ class ReportBundle(BaseModel):
     markdown: str | None = None
     html: str | None = None
     provenance_json: dict[str, Any] = Field(default_factory=dict)
+    qa_issues: list[ReportQaIssue] = Field(default_factory=list)
+    qa_passed: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

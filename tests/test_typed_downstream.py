@@ -155,6 +155,11 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(statements[0].citation_ids, [passage.id])
                 self.assertIn(f"[P:{passage.id}]", result["final_report"])
                 self.assertEqual(bundles[0].markdown, result["final_report"])
+                self.assertTrue(bundles[0].qa_passed)
+                self.assertEqual(
+                    bundles[0].qa_issues[0].code,
+                    "wording_exceeds_verification_status",
+                )
             finally:
                 graph_module.create_qwen_chat_model = original_factory
                 repository.close()

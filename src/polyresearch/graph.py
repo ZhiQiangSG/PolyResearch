@@ -49,6 +49,7 @@ from polyresearch.models import (
     VerificationStatus,
 )
 from polyresearch.repositories import RunContext
+from polyresearch.report_qa import validate_report_statements
 from polyresearch.utils import (
     create_qwen_chat_model,
     get_all_tools,
@@ -768,11 +769,25 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 claims=claims,
                 verification_results=verification_results,
             )
+            qa_issues = validate_report_statements(
+                statements=statements,
+                claims=claims,
+                passages=passages,
+                sources=sources,
+            )
+            qa_errors = [issue for issue in qa_issues if issue.severity == "error"]
+            if qa_errors:
+                return {
+                    "final_report": "Report QA failed:\n"
+                    + "\n".join(f"- {issue.message}" for issue in qa_errors),
+                    "messages": [AIMessage(content="Report QA failed")],
+                }
             markdown = _render_statement_markdown(
                 title=report_draft.title,
                 statements=statements,
                 passages=passages,
                 sources=sources,
+                qa_issues=qa_issues,
             )
             await context.repository.append_report_statements(context.run_id, statements)
             bundle = ReportBundle(
@@ -786,6 +801,8 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                         for claim_id in statement.claim_ids
                     ],
                 },
+                qa_issues=qa_issues,
+                qa_passed=True,
             )
             await context.repository.append_report_bundles(context.run_id, [bundle])
             
@@ -879,6 +896,7 @@ def _render_statement_markdown(
     statements: list[ReportStatement],
     passages: list[EvidencePassage],
     sources: list[SourceRecord],
+    qa_issues,
 ) -> str:
     """Render persisted statements and stable passage citations as Markdown."""
     passages_by_id = {passage.id: passage for passage in passages}
@@ -903,6 +921,10 @@ def _render_statement_markdown(
             lines.append(
                 f"- [P:{citation_id}] {source_label} — {source_url} ({passage.locator})"
             )
+    warnings = [issue for issue in qa_issues if issue.severity == "warning"]
+    if warnings:
+        lines.extend(["", "## QA warnings", ""])
+        lines.extend(f"- {warning.message}" for warning in warnings)
     return "\n".join(lines)
 
 # Main Deep Researcher Graph Construction
