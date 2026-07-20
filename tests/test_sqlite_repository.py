@@ -137,6 +137,18 @@ class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 # An identical immutable write is idempotent.
                 await repository.append_sources(run.id, [source])
                 self.assertEqual(len(await repository.list_sources(run.id)), 1)
+
+                # A resumed process can append new artifacts to the same durable run.
+                resumed_query = QueryRecord(
+                    run_id=run.id,
+                    query="policy update implementation date",
+                    language="en",
+                    provider="tavily",
+                )
+                await repository.append_query_records(run.id, [resumed_query])
+                self.assertEqual(
+                    await repository.list_query_records(run.id), [query, resumed_query]
+                )
             finally:
                 repository.close()
 
