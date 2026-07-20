@@ -73,11 +73,11 @@ class Configuration(BaseModel):
     # Model Configuration
     qwen_base_url: str = Field(default=DEFAULT_QWEN_BASE_URL)
     research_model: str = Field(default="qwen3.7-max")
-    research_model_max_tokens: int = Field(default=10000)
+    research_model_max_tokens: int = Field(default=40000)
     compression_model: str = Field(default="qwen3.7-plus")
-    compression_model_max_tokens: int = Field(default=8192)
+    compression_model_max_tokens: int = Field(default=15000)
     final_report_model: str = Field(default="qwen3.7-plus")
-    final_report_model_max_tokens: int = Field(default=10000)
+    final_report_model_max_tokens: int = Field(default=20000)
 
     # Bailian is the only MCP integration exposed during Milestone 3.
     bailian_web_search: Optional[BailianWebSearchConfig] = Field(default=None)
