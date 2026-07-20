@@ -239,7 +239,7 @@ claim_cluster_verification_prompt = """Verify each deterministic claim cluster a
 {verification_ledger}
 </VerificationLedger>
 
-Return only data matching the requested structured schema. Produce exactly one result for every supplied cluster ID, retaining its exact supplied claim IDs.
+Return only data matching the requested structured schema. Produce exactly one result for every supplied cluster ID. For each cluster, provide a claim assessment for every supplied claim ID exactly once.
 
 Verification rules:
 - Evaluate agreement and disagreement across the cluster; do not treat copies, mirrors, or shared-origin sources as independent corroboration.
@@ -248,6 +248,7 @@ Verification rules:
 - Mark `contradicted` only when linked evidence directly conflicts after accounting for scope, date, location, definitions, methodology, sample, and translation.
 - Use `not_comparable` for evidence that cannot be compared on those dimensions, `outdated` where temporal fit makes the claim stale, and `insufficient_evidence` otherwise.
 - Treat translation uncertainty as a verification factor. Preserve uncertainty in the rationale; do not upgrade confidence because a translation is fluent.
+- Classify every claim as exactly one of: `supported`, `partially_supported`, `contradicted`, `insufficient_evidence`, `outdated`, or `not_comparable`. Different claims in the same cluster may receive different classifications when their wording or scope differs.
 - Do not use any facts outside the ledger and do not invent evidence links, sources, passages, or claim IDs.
 """
 

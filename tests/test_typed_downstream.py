@@ -94,10 +94,16 @@ class _ClusterVerificationStub:
                 "clusters": [
                     {
                         "cluster_id": str(self.cluster_id),
-                        "claim_ids": [str(claim_id) for claim_id in self.claim_ids],
-                        "status": "supported",
-                        "confidence": 0.95,
-                        "rationale": "The cited passages directly support the shared proposition.",
+                        "cluster_rationale": "The cited passages support the shared proposition.",
+                        "claim_assessments": [
+                            {
+                                "claim_id": str(claim_id),
+                                "status": "supported",
+                                "confidence": 0.95,
+                                "rationale": "The cited passage directly supports this claim.",
+                            }
+                            for claim_id in self.claim_ids
+                        ],
                     }
                 ]
             }

@@ -489,7 +489,7 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                 draft.cluster_id: draft
                 for draft in response.clusters
                 if draft.cluster_id in verifiable_clusters
-                and set(draft.claim_ids)
+                and {assessment.claim_id for assessment in draft.claim_assessments}
                 == {claim.id for claim in verifiable_clusters[draft.cluster_id]}
             }
         except Exception:
@@ -508,12 +508,15 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                     for claim in cluster_claims
                 )
                 continue
+            assessments_by_claim_id = {
+                assessment.claim_id: assessment for assessment in draft.claim_assessments
+            }
             results.extend(
                 VerificationResult(
                     claim_id=claim.id,
-                    status=draft.status,
-                    confidence=draft.confidence,
-                    rationale=draft.rationale,
+                    status=assessments_by_claim_id[claim.id].status,
+                    confidence=assessments_by_claim_id[claim.id].confidence,
+                    rationale=assessments_by_claim_id[claim.id].rationale,
                     evidence_link_ids=[link.id for link in links_by_claim_id.get(claim.id, [])],
                 )
                 for claim in cluster_claims
@@ -552,4 +555,3 @@ verify_claims = verify_claim_clusters
 
 # Compile researcher subgraph for parallel execution by supervisor
 researcher_subgraph = researcher_builder.compile()
-

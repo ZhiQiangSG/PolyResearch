@@ -313,7 +313,14 @@ class ClaimClusterVerificationDraft(BaseModel):
     """Qwen judgement for a deterministic cluster of related claims."""
 
     cluster_id: UUID
-    claim_ids: list[UUID] = Field(min_length=1)
+    cluster_rationale: str = Field(min_length=1)
+    claim_assessments: list["ClaimVerificationAssessment"] = Field(min_length=1)
+
+
+class ClaimVerificationAssessment(BaseModel):
+    """One claim-level classification reached with cluster-level context."""
+
+    claim_id: UUID
     status: VerificationStatus
     confidence: float = Field(ge=0, le=1)
     rationale: str = Field(min_length=1)
