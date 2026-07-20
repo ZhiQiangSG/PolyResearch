@@ -41,6 +41,7 @@ from polyresearch.models import (
     SourceVersion,
 )
 from polyresearch.repositories import RunContext
+from polyresearch.source_ingestion import extract_document, fetch_source_content
 
 # --- Tavily Search Tool Utils ---
 
@@ -149,14 +150,42 @@ async def tavily_search(
     passages: list[EvidencePassage] = []
     for result in unique_results.values():
         original_text = result.get("raw_content") or result.get("content")
-        if not original_text:
-            continue
+        if original_text:
+            document = extract_document(
+                original_text,
+                content_type=result.get("content_type") or result.get("mime_type"),
+            )
+            http_metadata = {
+                key: result[key]
+                for key in ("status", "status_code", "content_type", "etag", "last_modified")
+                if result.get(key) is not None
+            }
+            extraction_method = "provider_content"
+        else:
+            try:
+                document = await fetch_source_content(result["canonical_url"])
+            except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError) as error:
+                logging.getLogger(__name__).info(
+                    "Unable to fetch discovered source %s: %s", result["canonical_url"], error
+                )
+                continue
+            original_text = document.raw_content
+            http_metadata = document.http_metadata
+            extraction_method = document.extraction_method
 
         content_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
         source = SourceRecord(
             canonical_url=result["canonical_url"],
-            title=result.get("title") or result["canonical_url"],
+            title=result.get("title") or document.title or result["canonical_url"],
+            publisher=result.get("publisher") or document.publisher,
+            author=result.get("author") or document.author,
+            language=document.language or query_language,
+            planned_query_language=query_language,
+            published_at=document.published_at,
+            updated_at=document.updated_at,
             content_hash=content_hash,
+            extraction_quality=document.extraction_quality,
+            extraction_notes=document.extraction_notes,
             research_unit_id=_research_unit_id_from_config(config),
             discovered_url=result["discovered_url"],
             redirect_chain=result["redirect_chain"],
@@ -166,10 +195,13 @@ async def tavily_search(
             version_number=1,
             content_hash=content_hash,
             raw_content=original_text,
+            http_metadata=http_metadata,
+            extraction_method=extraction_method,
+            extraction_quality=document.extraction_quality,
         )
         sources.append(source)
         source_versions.append(source_version)
-        passages.extend(_chunk_evidence_passages(source, original_text))
+        passages.extend(_chunk_evidence_passages(source, original_text, document.passages))
 
     if not sources:
         return "No valid search results found. Please try different search queries or use a different search API."
@@ -201,24 +233,26 @@ async def tavily_search(
 
 
 def _chunk_evidence_passages(
-    source: SourceRecord, original_text: str
+    source: SourceRecord,
+    original_text: str,
+    extracted_passages: list[tuple[str, str]] | None = None,
 ) -> list[EvidencePassage]:
     """Split fetched text into original-language paragraphs with stable locators."""
-    paragraphs = [
-        paragraph.strip()
-        for paragraph in re.split(r"\n\s*\n", original_text)
+    rows = extracted_passages or [
+        (f"paragraph-{index}", paragraph.strip())
+        for index, paragraph in enumerate(re.split(r"\n\s*\n", original_text), start=1)
         if paragraph.strip()
     ]
-    if not paragraphs:
+    if not rows:
         return []
     return [
         EvidencePassage(
             source_id=source.id,
-            text=paragraph,
-            locator=f"paragraph-{index}",
+            text=text,
+            locator=locator,
             original_language=source.language,
         )
-        for index, paragraph in enumerate(paragraphs, start=1)
+        for locator, text in rows
     ]
 
 

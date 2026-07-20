@@ -26,10 +26,16 @@ class SourceRecord(BaseModel):
     canonical_url: str
     title: str
     publisher: str | None = None
+    author: str | None = None
     language: str | None = None
+    planned_query_language: str | None = None
     source_type: str = "web"
+    published_at: datetime | None = None
+    updated_at: datetime | None = None
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     content_hash: str | None = None
+    extraction_quality: float | None = Field(default=None, ge=0, le=1)
+    extraction_notes: list[str] = Field(default_factory=list)
     research_unit_id: UUID | None = None
     discovered_url: str | None = None
     redirect_chain: list[str] = Field(default_factory=list)
@@ -45,6 +51,8 @@ class SourceVersion(BaseModel):
     raw_content: str
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     http_metadata: dict[str, Any] = Field(default_factory=dict)
+    extraction_method: str = "provider_content"
+    extraction_quality: float | None = Field(default=None, ge=0, le=1)
 
 
 class EvidencePassage(BaseModel):

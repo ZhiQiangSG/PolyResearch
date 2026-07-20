@@ -174,6 +174,7 @@ async def _persist_bailian_ingestion(
 
     # Reuse the same URL and passage semantics as the direct Tavily path.
     from polyresearch.utils import _chunk_evidence_passages, _redirect_chain, canonicalize_url
+    from polyresearch.source_ingestion import extract_document
 
     sources: list[SourceRecord] = []
     source_versions: list[SourceVersion] = []
@@ -215,15 +216,24 @@ async def _persist_bailian_ingestion(
         )
         if not isinstance(original_text, str) or not original_text.strip():
             continue
+        document = extract_document(
+            original_text,
+            content_type=row.get("content_type") or row.get("mime_type"),
+        )
         content_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
         source = SourceRecord(
             canonical_url=canonical_url,
             discovered_url=discovered_url,
             redirect_chain=_redirect_chain(row, discovered_url),
-            title=row.get("title") or canonical_url,
-            language=request.language,
+            title=row.get("title") or document.title or canonical_url,
+            publisher=row.get("publisher") or document.publisher,
+            author=row.get("author") or document.author,
+            language=document.language or request.language,
+            planned_query_language=request.language,
             source_type=request.target_source_type,
             content_hash=content_hash,
+            extraction_quality=document.extraction_quality,
+            extraction_notes=document.extraction_notes,
             research_unit_id=context.research_unit_id,
         )
         sources.append(source)
@@ -233,9 +243,16 @@ async def _persist_bailian_ingestion(
                 version_number=1,
                 content_hash=content_hash,
                 raw_content=original_text,
+                http_metadata={
+                    key: row[key]
+                    for key in ("status", "status_code", "content_type", "etag", "last_modified")
+                    if row.get(key) is not None
+                },
+                extraction_method="provider_content",
+                extraction_quality=document.extraction_quality,
             )
         )
-        passages.extend(_chunk_evidence_passages(source, original_text))
+        passages.extend(_chunk_evidence_passages(source, original_text, document.passages))
 
     if not query_records:
         query_records = [
