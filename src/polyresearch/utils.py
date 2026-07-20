@@ -221,7 +221,11 @@ async def tavily_search(
         )
         sources.append(source)
         source_versions.append(source_version)
-        passages.extend(_chunk_evidence_passages(source, original_text, document.passages))
+        passages.extend(
+            _chunk_evidence_passages(
+                source, original_text, document.passages, extracted_content=document.content
+            )
+        )
 
     if not sources:
         return "No valid search results found. Please try different search queries or use a different search API."
@@ -256,8 +260,10 @@ def _chunk_evidence_passages(
     source: SourceRecord,
     original_text: str,
     extracted_passages: list[tuple[str, str]] | None = None,
+    *,
+    extracted_content: str | None = None,
 ) -> list[EvidencePassage]:
-    """Split fetched text into original-language paragraphs with stable locators."""
+    """Split original text into citable passages with structural and offset anchors."""
     rows = extracted_passages or [
         (f"paragraph-{index}", paragraph.strip())
         for index, paragraph in enumerate(re.split(r"\n\s*\n", original_text), start=1)
@@ -265,15 +271,33 @@ def _chunk_evidence_passages(
     ]
     if not rows:
         return []
-    return [
-        EvidencePassage(
-            source_id=source.id,
-            text=text,
-            locator=locator,
-            original_language=source.language,
+    locator_content = extracted_content if extracted_content is not None else original_text
+    search_start = 0
+    passages: list[EvidencePassage] = []
+    for locator, text in rows:
+        character_start = locator_content.find(text, search_start)
+        if character_start < 0:
+            # A provider may normalize whitespace differently from extraction. The
+            # structural locator remains usable, while we avoid inventing offsets.
+            character_end = None
+        else:
+            character_end = character_start + len(text)
+            search_start = character_end
+        heading = None
+        if " / paragraph-" in locator:
+            heading = locator.rsplit(" / paragraph-", 1)[0]
+        passages.append(
+            EvidencePassage(
+                source_id=source.id,
+                text=text,
+                locator=locator,
+                heading=heading,
+                character_start=character_start if character_start >= 0 else None,
+                character_end=character_end,
+                original_language=source.language,
+            )
         )
-        for locator, text in rows
-    ]
+    return passages
 
 
 async def _persist_tavily_ingestion(

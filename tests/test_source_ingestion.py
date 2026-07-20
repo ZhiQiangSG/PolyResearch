@@ -1,6 +1,8 @@
 import unittest
 
+from polyresearch.models import SourceRecord
 from polyresearch.source_ingestion import detect_language, extract_document, languages_match
+from polyresearch.utils import _chunk_evidence_passages
 
 
 class SourceIngestionTests(unittest.TestCase):
@@ -51,3 +53,31 @@ class SourceIngestionTests(unittest.TestCase):
         self.assertTrue(languages_match("zh-cn", "zh"))
         self.assertFalse(languages_match("en", "zh-CN"))
         self.assertIsNone(languages_match(None, "zh"))
+
+    def test_passages_include_stable_heading_and_character_anchors(self) -> None:
+        document = extract_document(
+            "<html><body><h1>Findings</h1><p>First original sentence.</p>"
+            "<p>Second original sentence.</p></body></html>",
+            content_type="text/html",
+        )
+        source = SourceRecord(
+            canonical_url="https://example.test/source",
+            title="Source",
+            language="en",
+        )
+
+        passages = _chunk_evidence_passages(
+            source,
+            document.raw_content,
+            document.passages,
+            extracted_content=document.content,
+        )
+
+        self.assertEqual(passages[0].locator, "Findings / paragraph-1")
+        self.assertEqual(passages[0].heading, "Findings")
+        self.assertEqual(passages[0].character_start, 0)
+        self.assertEqual(passages[0].character_end, len("First original sentence."))
+        self.assertEqual(
+            passages[1].character_start,
+            len("First original sentence.\n\n"),
+        )

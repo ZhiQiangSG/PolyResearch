@@ -266,7 +266,11 @@ async def _persist_bailian_ingestion(
                 extraction_quality=document.extraction_quality,
             )
         )
-        passages.extend(_chunk_evidence_passages(source, original_text, document.passages))
+        passages.extend(
+            _chunk_evidence_passages(
+                source, original_text, document.passages, extracted_content=document.content
+            )
+        )
 
     if not query_records:
         query_records = [

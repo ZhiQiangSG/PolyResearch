@@ -76,7 +76,20 @@ class EvidencePassage(BaseModel):
     source_id: UUID
     text: str = Field(min_length=1)
     locator: str
+    heading: str | None = None
+    page_number: int | None = Field(default=None, ge=1)
+    character_start: int | None = Field(default=None, ge=0)
+    character_end: int | None = Field(default=None, ge=0)
     original_language: str | None = None
+
+    @model_validator(mode="after")
+    def validate_character_range(self) -> "EvidencePassage":
+        """Keep character offsets useful and unambiguous when extraction supplies them."""
+        if (self.character_start is None) != (self.character_end is None):
+            raise ValueError("character_start and character_end must be recorded together")
+        if self.character_start is not None and self.character_end <= self.character_start:
+            raise ValueError("character_end must be greater than character_start")
+        return self
 
 
 class TranslationRecord(BaseModel):
