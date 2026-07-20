@@ -151,6 +151,78 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                 repository.close()
                 utils.tavily_search_async = original_search
 
+    async def test_planned_search_routes_to_mocked_bailian_and_tavily_without_credentials(self) -> None:
+        async def fake_tavily_search(*args, **kwargs):
+            return [
+                {
+                    "query": "policy bridge coverage",
+                    "results": [
+                        {
+                            "url": "https://example.test/bridge",
+                            "title": "Bridge coverage",
+                            "raw_content": "English bridge evidence.",
+                        }
+                    ],
+                }
+            ]
+
+        class FakeBailianTool:
+            name = "web_search"
+
+            async def ainvoke(self, arguments, config=None):
+                self.arguments = arguments
+                return '{"results": [{"title": "中文官方来源"}]}'
+
+        fake_bailian_tool = FakeBailianTool()
+
+        class FakeMcpClient:
+            def __init__(self, config):
+                self.config = config
+
+            async def get_tools(self):
+                return [fake_bailian_tool]
+
+        original_tavily_search = utils.tavily_search_async
+        original_mcp_client = utils.MultiServerMCPClient
+        utils.tavily_search_async = fake_tavily_search
+        utils.MultiServerMCPClient = FakeMcpClient
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
+            plan = _routing_plan().model_copy(update={"run_id": run.id})
+            config = {
+                "configurable": {
+                    "run_id": str(run.id),
+                    "evidence_repository": repository,
+                    "research_plan": plan,
+                    "bailian_web_search": {
+                        "authentication": {"api_key": "mock-bailian-key"}
+                    },
+                }
+            }
+            try:
+                await repository.create_run(run)
+                chinese_result = await planned_web_search.coroutine(
+                    "政策", "zh", "official", locale="zh-CN", config=config
+                )
+                english_result = await planned_web_search.coroutine(
+                    "policy bridge coverage", "en", "news", locale="en-US", config=config
+                )
+                records = await repository.list_query_records(run.id)
+                self.assertIn("中文官方来源", chinese_result)
+                self.assertIn("polyresearch_evidence", english_result)
+                self.assertEqual(fake_bailian_tool.arguments, {"query": "政策"})
+                self.assertEqual(
+                    [record.provider for record in records],
+                    ["bailian_web_search", "tavily"],
+                )
+                self.assertEqual(records[0].language, "zh")
+                self.assertEqual(records[1].language, "en")
+            finally:
+                repository.close()
+                utils.tavily_search_async = original_tavily_search
+                utils.MultiServerMCPClient = original_mcp_client
+
     async def test_bailian_loads_only_allowlisted_web_search_tool(self) -> None:
         captured_config = None
 
