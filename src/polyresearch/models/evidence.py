@@ -19,6 +19,25 @@ class VerificationStatus(StrEnum):
     NOT_COMPARABLE = "not_comparable"
 
 
+class DisagreementDimension(StrEnum):
+    """Reasons superficially similar evidence may appear to disagree."""
+
+    TIME_PERIOD = "different_time_periods"
+    GEOGRAPHIC_SCOPE = "different_geographic_scope"
+    DEFINITION_OR_METHOD = "differing_definitions_or_measurement_methods"
+    POPULATION_OR_SAMPLE = "different_populations_or_samples"
+    TRANSLATION_AMBIGUITY = "translation_ambiguity"
+    GENUINE_CONFLICT = "genuinely_conflicting_evidence"
+
+
+class DisagreementAssessment(BaseModel):
+    """A verifier's explicit assessment of one possible disagreement cause."""
+
+    dimension: DisagreementDimension
+    present: bool
+    explanation: str = Field(min_length=1)
+
+
 class DocumentSection(BaseModel):
     """A stable structural region of a fetched source document."""
 
@@ -307,6 +326,7 @@ class VerificationResult(BaseModel):
     confidence: float = Field(ge=0, le=1)
     rationale: str
     evidence_link_ids: list[UUID] = Field(default_factory=list)
+    disagreement_assessments: list[DisagreementAssessment] = Field(default_factory=list)
 
 
 class ClaimClusterVerificationDraft(BaseModel):
@@ -315,6 +335,15 @@ class ClaimClusterVerificationDraft(BaseModel):
     cluster_id: UUID
     cluster_rationale: str = Field(min_length=1)
     claim_assessments: list["ClaimVerificationAssessment"] = Field(min_length=1)
+    disagreement_assessments: list[DisagreementAssessment] = Field(min_length=6)
+
+    @model_validator(mode="after")
+    def require_all_disagreement_dimensions(self) -> "ClaimClusterVerificationDraft":
+        dimensions = {assessment.dimension for assessment in self.disagreement_assessments}
+        required = set(DisagreementDimension)
+        if dimensions != required or len(self.disagreement_assessments) != len(required):
+            raise ValueError("Every disagreement dimension must be assessed exactly once")
+        return self
 
 
 class ClaimVerificationAssessment(BaseModel):

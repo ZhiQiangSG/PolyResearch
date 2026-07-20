@@ -518,6 +518,7 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                     confidence=assessments_by_claim_id[claim.id].confidence,
                     rationale=assessments_by_claim_id[claim.id].rationale,
                     evidence_link_ids=[link.id for link in links_by_claim_id.get(claim.id, [])],
+                    disagreement_assessments=draft.disagreement_assessments,
                 )
                 for claim in cluster_claims
             )

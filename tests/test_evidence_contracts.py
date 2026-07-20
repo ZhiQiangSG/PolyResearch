@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from polyresearch.models import (
     Claim,
     ClaimExtractionDraft,
+    ClaimClusterVerificationDraft,
     ClaimScope,
     EvidencePassage,
     SourceRecord,
@@ -86,6 +87,29 @@ class EvidenceContractTests(unittest.TestCase):
             evidence_passage_ids=[passage.id],
         )
         self.assertEqual(draft.evidence_passage_ids, [passage.id])
+
+    def test_cluster_verifier_requires_every_disagreement_dimension(self) -> None:
+        claim_id = UUID("00000000-0000-0000-0000-000000000001")
+        with self.assertRaises(ValidationError):
+            ClaimClusterVerificationDraft(
+                cluster_id=UUID("00000000-0000-0000-0000-000000000002"),
+                cluster_rationale="The evidence is comparable.",
+                claim_assessments=[
+                    {
+                        "claim_id": claim_id,
+                        "status": "supported",
+                        "confidence": 0.9,
+                        "rationale": "The passage directly supports the claim.",
+                    }
+                ],
+                disagreement_assessments=[
+                    {
+                        "dimension": "different_time_periods",
+                        "present": False,
+                        "explanation": "The sources cover the same period.",
+                    }
+                ],
+            )
 
     def test_evidence_reducer_deduplicates_ids_and_override_reducer_replaces(self) -> None:
         source = SourceRecord(canonical_url="https://example.test", title="Example")

@@ -104,6 +104,21 @@ class _ClusterVerificationStub:
                             }
                             for claim_id in self.claim_ids
                         ],
+                        "disagreement_assessments": [
+                            {
+                                "dimension": dimension,
+                                "present": False,
+                                "explanation": "The cited passages use the same scope.",
+                            }
+                            for dimension in (
+                                "different_time_periods",
+                                "different_geographic_scope",
+                                "differing_definitions_or_measurement_methods",
+                                "different_populations_or_samples",
+                                "translation_ambiguity",
+                                "genuinely_conflicting_evidence",
+                            )
+                        ],
                     }
                 ]
             }
@@ -264,6 +279,9 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 persisted = await repository.list_verification_results(run.id)
                 self.assertEqual({item.claim_id for item in persisted}, {claim.id, corroborating_claim.id})
                 self.assertTrue(all(item.status is VerificationStatus.SUPPORTED for item in persisted))
+                self.assertTrue(
+                    all(len(item.disagreement_assessments) == 6 for item in persisted)
+                )
                 self.assertIn(str(claim.claim_cluster_id), verifier.messages[0].content)
                 self.assertEqual(verifier.messages[0].content.count('"cluster_id"'), 1)
                 self.assertEqual(result["verification_results"], persisted)
