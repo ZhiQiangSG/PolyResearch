@@ -1,5 +1,6 @@
 """Provider-routed discovery constrained by the persisted multilingual plan."""
 
+import asyncio
 from dataclasses import dataclass
 
 from langchain_core.runnables import RunnableConfig
@@ -48,7 +49,13 @@ class BailianWebSearchProvider:
             )
         # Bailian owns its input schema. Only pass the documented search query;
         # locale and language are controlled by the narrow Bailian configuration.
-        return await tools[0].ainvoke({"query": request.query}, config=config)
+        bailian = Configuration.from_runnable_config(config).bailian_web_search
+        if bailian is None:  # Defensive guard; the loader already checks this.
+            raise ToolException("Bailian Web Search is not configured.")
+        return await asyncio.wait_for(
+            tools[0].ainvoke({"query": request.query}, config=config),
+            timeout=bailian.timeout_seconds,
+        )
 
 
 class SearchProviderRouter:

@@ -573,7 +573,9 @@ async def load_bailian_web_search_tool(
     if bailian is None or bailian.tool_name in existing_tool_names:
         return []
 
-    api_key = bailian.api_key or os.getenv("DASHSCOPE_API_KEY")
+    api_key = bailian.authentication.api_key or os.getenv(
+        bailian.authentication.api_key_env_var
+    )
     if not api_key:
         return []
     mcp_server_config = {
@@ -585,7 +587,9 @@ async def load_bailian_web_search_tool(
     }
     try:
         client = MultiServerMCPClient(mcp_server_config)
-        available_tools = await client.get_tools()
+        available_tools = await asyncio.wait_for(
+            client.get_tools(), timeout=bailian.timeout_seconds
+        )
     except Exception:
         return []
 

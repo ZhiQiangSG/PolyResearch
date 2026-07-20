@@ -1,7 +1,7 @@
 import os
 import re
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
 from langchain_core.runnables import RunnableConfig
@@ -33,12 +33,22 @@ BAILIAN_WEB_SEARCH_MCP_URL = (
 )
 
 
+class BailianAuthenticationConfig(BaseModel):
+    """Bearer-token configuration for the Bailian MCP service."""
+
+    api_key: str | None = Field(default=None, repr=False)
+    api_key_env_var: str = Field(default="DASHSCOPE_API_KEY", min_length=1)
+    scheme: Literal["bearer"] = "bearer"
+
+
 class BailianWebSearchConfig(BaseModel):
     """Narrow configuration for Bailian's Chinese web-search MCP service only."""
 
     server_url: str = Field(default=BAILIAN_WEB_SEARCH_MCP_URL)
     tool_name: str = Field(default="web_search")
-    api_key: str | None = Field(default=None, repr=False)
+    authentication: BailianAuthenticationConfig = Field(
+        default_factory=BailianAuthenticationConfig
+    )
     locale: str = Field(default="zh-CN")
     query_language: str = Field(default="zh")
     timeout_seconds: float = Field(default=30, gt=0, le=120)

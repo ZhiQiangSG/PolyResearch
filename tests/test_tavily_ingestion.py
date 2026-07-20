@@ -73,7 +73,10 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
     def test_bailian_configuration_rejects_non_allowlisted_tools(self) -> None:
         with self.assertRaises(ValueError):
             Configuration(
-                bailian_web_search={"tool_name": "filesystem_read", "api_key": "test"}
+                bailian_web_search={
+                    "tool_name": "filesystem_read",
+                    "authentication": {"api_key": "test"},
+                }
             )
 
     async def test_planned_search_is_available_without_bailian(self) -> None:
@@ -114,7 +117,9 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
             tools = await utils.load_bailian_web_search_tool(
                 {
                     "configurable": {
-                        "bailian_web_search": {"api_key": "test-key"},
+                        "bailian_web_search": {
+                            "authentication": {"api_key": "test-key"}
+                        },
                         "mcp_config": {
                             "url": "https://untrusted.example",
                             "tools": ["unrelated_remote_tool"],
