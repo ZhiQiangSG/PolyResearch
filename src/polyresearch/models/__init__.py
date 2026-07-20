@@ -24,6 +24,7 @@ from polyresearch.models.evidence import (
     SourceRecord,
     SourceVersion,
     TranslationRecord,
+    TranslationDraft,
     VerificationResult,
     VerificationStatus,
 )
@@ -82,6 +83,7 @@ __all__ = [
     "VerificationResult",
     "VerificationStatus",
     "TranslationRecord",
+    "TranslationDraft",
     "TerminologyRecord",
     "override_reducer",
 ]

@@ -125,6 +125,13 @@ class TranslationRecord(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class TranslationDraft(BaseModel):
+    """One model-produced translation before immutable provenance is attached."""
+
+    translated_text: str = Field(min_length=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 class QueryRecord(BaseModel):
     """Provenance for a discovery query and provider-routing decision."""
 

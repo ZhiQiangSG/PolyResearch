@@ -41,6 +41,8 @@ from polyresearch.models import (
     ResearchQuestion,
     ResearchRun,
     SourceRecord,
+    TranslationDraft,
+    TranslationRecord,
     SupervisorState,
     VerificationResult,
     VerificationStatus,
@@ -70,6 +72,7 @@ from polyresearch.utils import (
     is_token_limit_exceeded,
     think_tool,
 )
+from polyresearch.source_ingestion import languages_match
 
 
 async def initialize_research_run(
@@ -694,6 +697,95 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
         "verification_results": [],
     }
 
+
+async def translate_claim_evidence(state: ResearcherState, config: RunnableConfig):
+    """Persist translations only for claim evidence needed in another output language."""
+    context, sources, passages, claims, _, verification_results = await _load_evidence_ledger(
+        config
+    )
+    output_language = config.get("configurable", {}).get("output_language", "en")
+    required_passage_ids = {
+        passage_id for claim in claims for passage_id in claim.evidence_passage_ids
+    }
+    translation_candidates = [
+        passage
+        for passage in passages
+        if passage.id in required_passage_ids
+        and passage.original_language
+        and not languages_match(passage.original_language, output_language)
+    ]
+    if not translation_candidates:
+        return {
+            "sources": sources,
+            "passages": passages,
+            "claims": claims,
+            "verification_results": verification_results,
+        }
+
+    existing_translations = await context.repository.list_translations(context.run_id)
+    existing_keys = {
+        (translation.passage_id, translation.target_language, translation.source_original_text_hash)
+        for translation in existing_translations
+    }
+    configurable = Configuration.from_runnable_config(config)
+    translator = create_qwen_chat_model(
+        configurable,
+        configurable.compression_model,
+        configurable.compression_model_max_tokens,
+        config,
+    ).with_structured_output(TranslationDraft).with_retry(
+        stop_after_attempt=configurable.max_structured_output_retries
+    )
+    translations: list[TranslationRecord] = []
+    for passage in translation_candidates:
+        key = (passage.id, output_language, passage.original_text_hash)
+        if key in existing_keys:
+            continue
+        try:
+            draft = cast(
+                TranslationDraft,
+                await translator.ainvoke(
+                    [
+                        SystemMessage(
+                            content=(
+                                "Translate the supplied original-language evidence passage. "
+                                "Do not summarize, omit qualifiers, or add information."
+                            )
+                        ),
+                        HumanMessage(
+                            content=(
+                                f"Target language: {output_language}\n"
+                                f"Passage ID: {passage.id}\n"
+                                f"Original text:\n{passage.text}"
+                            )
+                        ),
+                    ]
+                ),
+            )
+        except Exception:
+            # Translation is an optional derivative; retain original evidence when
+            # a model call fails rather than replacing it with an uncertain string.
+            continue
+        translations.append(
+            TranslationRecord(
+                passage_id=passage.id,
+                translated_text=draft.translated_text,
+                target_language=output_language,
+                model_id=configurable.compression_model,
+                prompt_version="translation-v1",
+                confidence=draft.confidence,
+                source_original_text_hash=passage.original_text_hash,
+            )
+        )
+    if translations:
+        await context.repository.append_translations(context.run_id, translations)
+    return {
+        "sources": sources,
+        "passages": passages,
+        "claims": claims,
+        "verification_results": verification_results,
+    }
+
 # Researcher Subgraph Construction
 # Creates individual researcher workflow for conducting focused research on specific topics
 researcher_builder = StateGraph(
@@ -706,10 +798,12 @@ researcher_builder = StateGraph(
 researcher_builder.add_node("researcher", researcher)                 # Main researcher logic
 researcher_builder.add_node("researcher_tools", researcher_tools)     # Tool execution handler
 researcher_builder.add_node("extract_claims", extract_claims)         # Claim extraction
+researcher_builder.add_node("translate_claim_evidence", translate_claim_evidence)
 
 # Define researcher workflow edges
 researcher_builder.add_edge(START, "researcher")           # Entry point to researcher
-researcher_builder.add_edge("extract_claims", END)          # Exit point after claim extraction
+researcher_builder.add_edge("extract_claims", "translate_claim_evidence")
+researcher_builder.add_edge("translate_claim_evidence", END)
 
 # Compile researcher subgraph for parallel execution by supervisor
 researcher_subgraph = researcher_builder.compile()

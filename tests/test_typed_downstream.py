@@ -12,6 +12,7 @@ from polyresearch.models import (
     ReportStatementDraft,
     ResearchRun,
     SourceRecord,
+    TranslationDraft,
 )
 from polyresearch.repositories import SqliteEvidenceRepository
 
@@ -48,7 +49,57 @@ class _ReportWriterStub:
         return self.draft
 
 
+class _TranslationStub:
+    def with_structured_output(self, schema):
+        return self
+
+    def with_retry(self, **kwargs):
+        return self
+
+    async def ainvoke(self, messages):
+        return TranslationDraft(translated_text="The policy changed.", confidence=0.9)
+
+
 class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_translates_only_claim_evidence_needed_for_output_language(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
+            source = SourceRecord(canonical_url="https://example.test/policy", title="Policy")
+            passage = EvidencePassage(
+                source_id=source.id,
+                text="政策已变更。",
+                locator="paragraph-1",
+                original_language="zh",
+            )
+            claim = Claim(
+                statement="The policy changed.",
+                evidence_passage_ids=[passage.id],
+                extraction_confidence=0.9,
+            )
+            original_factory = graph_module.create_qwen_chat_model
+            graph_module.create_qwen_chat_model = lambda *args, **kwargs: _TranslationStub()
+            try:
+                await repository.create_run(run)
+                await repository.append_sources(run.id, [source])
+                await repository.append_passages(run.id, [passage])
+                await repository.append_claims(run.id, [claim])
+                await graph_module.translate_claim_evidence(
+                    {},
+                    {"configurable": {
+                        "run_id": str(run.id),
+                        "evidence_repository": repository,
+                        "output_language": "en",
+                    }},
+                )
+                translations = await repository.list_translations(run.id)
+                self.assertEqual(len(translations), 1)
+                self.assertEqual(translations[0].passage_id, passage.id)
+                self.assertEqual(translations[0].source_original_text_hash, passage.original_text_hash)
+                self.assertEqual(translations[0].target_language, "en")
+            finally:
+                graph_module.create_qwen_chat_model = original_factory
+                repository.close()
     async def test_claim_extraction_reads_and_writes_the_durable_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")
