@@ -1,6 +1,6 @@
 """Typed, passage-level evidence artifacts used throughout a research run."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -80,6 +80,8 @@ class QueryRecord(BaseModel):
     locale: str | None = None
     target_source_type: str | None = None
     rationale: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
     result_rank: int | None = Field(default=None, ge=1)
     fallback_from: str | None = None
     failure: str | None = None

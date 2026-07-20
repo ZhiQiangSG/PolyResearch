@@ -7,7 +7,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import ToolException, tool
 
 from polyresearch.configuration import Configuration
-from polyresearch.models import ResearchPlan
+from polyresearch.models import QueryRecord, ResearchPlan
+from polyresearch.repositories import RunContext
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,10 @@ class SearchRequest:
     query: str
     language: str
     target_source_type: str
+    locale: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+    rationale: str | None = None
 
 
 class TavilySearchProvider:
@@ -29,7 +34,14 @@ class TavilySearchProvider:
         from polyresearch.utils import tavily_search
 
         return await tavily_search.coroutine(
-            [request.query], query_language=request.language, config=config
+            [request.query],
+            query_language=request.language,
+            locale=request.locale,
+            start_date=request.date_from,
+            end_date=request.date_to,
+            target_source_type=request.target_source_type,
+            query_rationale=request.rationale,
+            config=config,
         )
 
 
@@ -52,10 +64,39 @@ class BailianWebSearchProvider:
         bailian = Configuration.from_runnable_config(config).bailian_web_search
         if bailian is None:  # Defensive guard; the loader already checks this.
             raise ToolException("Bailian Web Search is not configured.")
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             tools[0].ainvoke({"query": request.query}, config=config),
             timeout=bailian.timeout_seconds,
         )
+        await _persist_bailian_query_record(request, config)
+        return result
+
+
+async def _persist_bailian_query_record(
+    request: SearchRequest, config: RunnableConfig
+) -> None:
+    """Record Bailian's plan-driven query metadata before later ingestion stages."""
+    try:
+        context = RunContext.from_runnable_config(config)
+    except ValueError:
+        return
+    await context.repository.append_query_records(
+        context.run_id,
+        [
+            QueryRecord(
+                run_id=context.run_id,
+                research_unit_id=context.research_unit_id,
+                query=request.query,
+                language=request.language,
+                locale=request.locale,
+                provider="bailian_web_search",
+                target_source_type=request.target_source_type,
+                rationale=request.rationale,
+                date_from=request.date_from,
+                date_to=request.date_to,
+            )
+        ],
+    )
 
 
 class SearchProviderRouter:
@@ -98,6 +139,10 @@ async def planned_web_search(
     query: str,
     language: str,
     target_source_type: str,
+    locale: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    query_rationale: str | None = None,
     config: RunnableConfig = None,
 ) -> str:
     """Search only a language and source type selected by the multilingual plan."""
@@ -107,6 +152,10 @@ async def planned_web_search(
         query=query,
         language=language,
         target_source_type=target_source_type,
+        locale=locale,
+        date_from=date_from,
+        date_to=date_to,
+        rationale=query_rationale,
     )
     provider = SearchProviderRouter().route(request, _research_plan_from_config(config))
     return await provider.search(request, config)

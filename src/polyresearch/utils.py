@@ -53,6 +53,11 @@ async def tavily_search(
     max_results: Annotated[int, InjectedToolArg] = 5,
     topic: Annotated[Literal["general", "news", "finance"], InjectedToolArg] = "general",
     query_language: Annotated[str, InjectedToolArg] = "en",
+    locale: Annotated[str | None, InjectedToolArg] = None,
+    start_date: Annotated[str | None, InjectedToolArg] = None,
+    end_date: Annotated[str | None, InjectedToolArg] = None,
+    target_source_type: Annotated[str | None, InjectedToolArg] = None,
+    query_rationale: Annotated[str | None, InjectedToolArg] = None,
     config: RunnableConfig = None
 ) -> str:
     """Fetch source records and exact passages from Tavily search API.
@@ -72,6 +77,8 @@ async def tavily_search(
         max_results=max_results,
         topic=topic,
         include_raw_content=True,
+        start_date=start_date,
+        end_date=end_date,
         config=config
     )
     
@@ -119,6 +126,11 @@ async def tavily_search(
         search_results=search_results,
         queries=queries,
         query_language=query_language,
+        locale=locale,
+        target_source_type=target_source_type,
+        query_rationale=query_rationale,
+        start_date=start_date,
+        end_date=end_date,
         sources=sources,
         source_versions=source_versions,
         passages=passages,
@@ -162,6 +174,11 @@ async def _persist_tavily_ingestion(
     search_results: list[dict],
     queries: list[str],
     query_language: str,
+    locale: str | None,
+    target_source_type: str | None,
+    query_rationale: str | None,
+    start_date: str | None,
+    end_date: str | None,
     sources: list[SourceRecord],
     source_versions: list[SourceVersion],
     passages: list[EvidencePassage],
@@ -184,6 +201,11 @@ async def _persist_tavily_ingestion(
             query=query,
             language=query_language,
             provider="tavily",
+            locale=locale,
+            target_source_type=target_source_type,
+            rationale=query_rationale,
+            date_from=start_date,
+            date_to=end_date,
         )
         for query in queries
     ]
@@ -218,6 +240,8 @@ async def tavily_search_async(
     max_results: int = 5, 
     topic: Literal["general", "news", "finance"] = "general", 
     include_raw_content: bool = True, 
+    start_date: str | None = None,
+    end_date: str | None = None,
     config: RunnableConfig = None
 ):
     """Execute multiple Tavily search queries asynchronously.
@@ -236,15 +260,18 @@ async def tavily_search_async(
     tavily_client = AsyncTavilyClient(api_key=get_tavily_api_key(config))
     
     # Create search tasks for parallel execution
-    search_tasks = [
-        tavily_client.search(
-            query,
-            max_results=max_results,
-            include_raw_content=include_raw_content,
-            topic=topic
-        )
-        for query in search_queries
-    ]
+    search_tasks = []
+    for query in search_queries:
+        search_args = {
+            "max_results": max_results,
+            "include_raw_content": include_raw_content,
+            "topic": topic,
+        }
+        if start_date is not None:
+            search_args["start_date"] = start_date
+        if end_date is not None:
+            search_args["end_date"] = end_date
+        search_tasks.append(tavily_client.search(query, **search_args))
     
     # Execute all search queries in parallel and return results
     search_results = await asyncio.gather(*search_tasks)

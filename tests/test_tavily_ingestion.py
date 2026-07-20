@@ -164,16 +164,30 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                     await utils.tavily_search.coroutine(
                         ["policy update"],
                         config={
-                            "configurable": {
-                                "run_id": str(run.id),
-                                "evidence_repository": repository,
-                            }
+                        "configurable": {
+                            "run_id": str(run.id),
+                            "evidence_repository": repository,
                         },
-                    )
+                    },
+                    query_language="fr",
+                    locale="fr-FR",
+                    start_date="2025-01-01",
+                    end_date="2025-12-31",
+                    target_source_type="official",
+                    query_rationale="Find the official policy update.",
+                )
                 )
 
                 self.assertEqual(payload["type"], "polyresearch_evidence")
-                self.assertEqual(len(await repository.list_query_records(run.id)), 1)
+                query_records = await repository.list_query_records(run.id)
+                self.assertEqual(len(query_records), 1)
+                self.assertEqual(query_records[0].run_id, run.id)
+                self.assertEqual(query_records[0].language, "fr")
+                self.assertEqual(query_records[0].locale, "fr-FR")
+                self.assertEqual(query_records[0].target_source_type, "official")
+                self.assertEqual(query_records[0].rationale, "Find the official policy update.")
+                self.assertEqual(str(query_records[0].date_from), "2025-01-01")
+                self.assertEqual(str(query_records[0].date_to), "2025-12-31")
                 self.assertEqual(len(await repository.list_provenance_attachments(run.id)), 1)
                 self.assertEqual(len(await repository.list_sources(run.id)), 1)
                 self.assertEqual(len(await repository.list_source_versions(run.id)), 1)
