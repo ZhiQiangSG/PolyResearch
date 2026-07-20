@@ -234,6 +234,10 @@ class ClaimQuantity(BaseModel):
     original_value: str = Field(min_length=1)
     normalized_value: str | None = None
     unit: str | None = None
+    normalized_unit: str | None = None
+    currency_code: str | None = None
+    normalization_status: Literal["normalized", "original_retained"] = "original_retained"
+    normalization_notes: list[str] = Field(default_factory=list)
 
 
 class ClaimDate(BaseModel):
@@ -241,6 +245,8 @@ class ClaimDate(BaseModel):
 
     original_value: str = Field(min_length=1)
     normalized_value: str | None = None
+    normalization_status: Literal["normalized", "original_retained"] = "original_retained"
+    normalization_notes: list[str] = Field(default_factory=list)
 
 
 class ClaimLocation(BaseModel):
