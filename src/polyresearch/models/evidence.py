@@ -308,17 +308,19 @@ class ClaimExtractionDraft(BaseModel):
 
 
 class EvidenceLink(BaseModel):
-    """Relationship between an evidence passage and a claim."""
+    """An immutable assertion or verification relationship between evidence and a claim."""
 
     id: UUID = Field(default_factory=uuid4)
     claim_id: UUID
     passage_id: UUID
     relationship: Literal["supports", "contradicts", "contextualizes"]
     rationale: str | None = None
+    origin: Literal["claim_extraction", "verification"] = "claim_extraction"
+    verification_result_id: UUID | None = None
 
 
 class VerificationResult(BaseModel):
-    """A conservative verification judgement for a single claim."""
+    """An immutable, versioned verification judgement for a single claim."""
 
     id: UUID = Field(default_factory=uuid4)
     claim_id: UUID
@@ -327,6 +329,15 @@ class VerificationResult(BaseModel):
     rationale: str
     evidence_link_ids: list[UUID] = Field(default_factory=list)
     disagreement_assessments: list[DisagreementAssessment] = Field(default_factory=list)
+    confidence_factors: dict[str, float] = Field(default_factory=dict)
+    independent_source_count: int = Field(default=0, ge=0)
+    attempt_number: int = Field(default=1, ge=1)
+    supersedes_verification_result_id: UUID | None = None
+    trigger: Literal["initial_verification", "conflict_resolution"] = "initial_verification"
+    verifier_model_id: str = Field(default="unrecorded", min_length=1)
+    verifier_prompt_version: str = Field(default="unrecorded", min_length=1)
+    verified_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ClaimClusterVerificationDraft(BaseModel):
@@ -352,6 +363,17 @@ class ClaimVerificationAssessment(BaseModel):
     claim_id: UUID
     status: VerificationStatus
     confidence: float = Field(ge=0, le=1)
+    rationale: str = Field(min_length=1)
+    evidence_assessments: list["VerificationEvidenceAssessment"] = Field(
+        default_factory=list
+    )
+
+
+class VerificationEvidenceAssessment(BaseModel):
+    """Verifier classification of one input evidence link for a claim."""
+
+    evidence_link_id: UUID
+    relationship: Literal["supports", "contradicts", "contextualizes"]
     rationale: str = Field(min_length=1)
 
 
@@ -396,6 +418,22 @@ class ReportQaIssue(BaseModel):
     statement_id: UUID | None = None
 
 
+class UnresolvedDisagreement(BaseModel):
+    """A durable account of evidence that remains materially unresolved.
+
+    This is intentionally separate from report prose: consumers can render or
+    inspect the conflict without inferring it from a verifier rationale.
+    """
+
+    cluster_id: UUID
+    claim_ids: list[UUID] = Field(min_length=1)
+    conflicting_claims: list[str] = Field(min_length=1)
+    verification_statuses: dict[str, VerificationStatus] = Field(default_factory=dict)
+    disagreement_assessments: list[DisagreementAssessment] = Field(default_factory=list)
+    why_it_may_conflict: list[str] = Field(min_length=1)
+    evidence_needed: list[str] = Field(min_length=1)
+
+
 class ReportBundle(BaseModel):
     """The exported, auditable report artifacts for one research run."""
 
@@ -404,6 +442,7 @@ class ReportBundle(BaseModel):
     markdown: str | None = None
     html: str | None = None
     provenance_json: dict[str, Any] = Field(default_factory=dict)
+    unresolved_disagreements: list[UnresolvedDisagreement] = Field(default_factory=list)
     qa_issues: list[ReportQaIssue] = Field(default_factory=list)
     qa_passed: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

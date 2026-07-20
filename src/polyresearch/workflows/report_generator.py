@@ -1,15 +1,18 @@
 """Report generation, QA, and rendering from typed evidence artifacts."""
 
 import json
+from collections import defaultdict
 from typing import cast
+from uuid import UUID
 
 from langchain_core.messages import AIMessage, HumanMessage, get_buffer_string
 from langchain_core.runnables import RunnableConfig
 
 from polyresearch.configuration import Configuration
 from polyresearch.models import (
-    AgentState, Claim, EvidencePassage, ReportBundle, ReportDraft, ReportQaIssue,
-    ReportStatement, SourceRecord, VerificationResult, VerificationStatus,
+    AgentState, Claim, DisagreementAssessment, DisagreementDimension,
+    EvidencePassage, ReportBundle, ReportDraft, ReportQaIssue, ReportStatement,
+    SourceRecord, UnresolvedDisagreement, VerificationResult, VerificationStatus,
 )
 from polyresearch.nodes.provenance import (
     load_evidence_ledger as _load_evidence_ledger,
@@ -38,6 +41,9 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
         config
     )
     queries = await context.repository.list_query_records(context.run_id)
+    unresolved_disagreements = _build_unresolved_disagreements(
+        claims=claims, verification_results=verification_results
+    )
     findings = json.dumps(
         {
             "sources": _serialize_artifacts(sources, SourceRecord),
@@ -115,6 +121,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 passages=passages,
                 sources=sources,
                 qa_issues=qa_issues,
+                unresolved_disagreements=unresolved_disagreements,
             )
             await context.repository.append_report_statements(context.run_id, statements)
             bundle = ReportBundle(
@@ -127,7 +134,12 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                         for statement in statements
                         for claim_id in statement.claim_ids
                     ],
+                    "unresolved_disagreement_cluster_ids": [
+                        str(disagreement.cluster_id)
+                        for disagreement in unresolved_disagreements
+                    ],
                 },
+                unresolved_disagreements=unresolved_disagreements,
                 qa_issues=qa_issues,
                 qa_passed=True,
             )
@@ -136,6 +148,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
             # Return successful report generation
             return {
                 "final_report": markdown,
+                "unresolved_disagreements": unresolved_disagreements,
                 "messages": [AIMessage(content=markdown)],
             }
             
@@ -185,7 +198,8 @@ def _build_report_statements(
     """Resolve model-selected claim IDs into durable, cited report statements."""
     claims_by_id = {claim.id: claim for claim in claims}
     statuses_by_claim_id = {
-        result.claim_id: result.status for result in verification_results
+        claim_id: result.status
+        for claim_id, result in _latest_results_by_claim_id(verification_results).items()
     }
     statements: list[ReportStatement] = []
     for draft in report_draft.statements:
@@ -216,6 +230,118 @@ def _build_report_statements(
     return statements
 
 
+def _build_unresolved_disagreements(
+    *,
+    claims: list[Claim],
+    verification_results: list[VerificationResult],
+) -> list[UnresolvedDisagreement]:
+    """Promote unresolved verified disagreements into durable report outputs."""
+    claims_by_cluster: dict[UUID, list[Claim]] = defaultdict(list)
+    for claim in claims:
+        claims_by_cluster[claim.claim_cluster_id or claim.id].append(claim)
+    results_by_claim_id = _latest_results_by_claim_id(verification_results)
+    unresolved: list[UnresolvedDisagreement] = []
+    unresolved_statuses = {
+        VerificationStatus.CONTRADICTED,
+        VerificationStatus.NOT_COMPARABLE,
+    }
+
+    for cluster_id, cluster_claims in claims_by_cluster.items():
+        results = [
+            result for claim in cluster_claims
+            if (result := results_by_claim_id.get(claim.id)) is not None
+        ]
+        assessments = _unique_assessments(results)
+        has_genuine_conflict = any(
+            assessment.dimension == DisagreementDimension.GENUINE_CONFLICT
+            and assessment.present
+            for assessment in assessments
+        )
+        has_conflicting_status = any(result.status in unresolved_statuses for result in results)
+        # Insufficient evidence is a limitation, but is not itself a disagreement.
+        if not has_genuine_conflict and not has_conflicting_status:
+            continue
+
+        causes = [assessment for assessment in assessments if assessment.present]
+        why_it_may_conflict = [assessment.explanation for assessment in causes]
+        if not why_it_may_conflict:
+            why_it_may_conflict = [
+                "The available evidence reaches incompatible conclusions without "
+                "enough shared context to determine the cause."
+            ]
+        unresolved.append(
+            UnresolvedDisagreement(
+                cluster_id=cluster_id,
+                claim_ids=[claim.id for claim in cluster_claims],
+                conflicting_claims=[claim.statement for claim in cluster_claims],
+                verification_statuses={
+                    str(result.claim_id): result.status for result in results
+                },
+                disagreement_assessments=causes,
+                why_it_may_conflict=why_it_may_conflict,
+                evidence_needed=_resolution_evidence_needed(causes),
+            )
+        )
+    return unresolved
+
+
+def _latest_results_by_claim_id(
+    results: list[VerificationResult],
+) -> dict[UUID, VerificationResult]:
+    """Use only the newest immutable verification attempt in report output."""
+    latest: dict[UUID, VerificationResult] = {}
+    for result in results:
+        current = latest.get(result.claim_id)
+        if current is None or (result.attempt_number, result.created_at, str(result.id)) > (
+            current.attempt_number,
+            current.created_at,
+            str(current.id),
+        ):
+            latest[result.claim_id] = result
+    return latest
+
+
+def _unique_assessments(
+    results: list[VerificationResult],
+) -> list[DisagreementAssessment]:
+    """Deduplicate equivalent verifier assessments emitted for cluster members."""
+    assessments: dict[tuple[DisagreementDimension, bool, str], DisagreementAssessment] = {}
+    for result in results:
+        for assessment in result.disagreement_assessments:
+            assessments[(assessment.dimension, assessment.present, assessment.explanation)] = assessment
+    return list(assessments.values())
+
+
+def _resolution_evidence_needed(
+    causes: list[DisagreementAssessment],
+) -> list[str]:
+    """Name the evidence that would make each identified disagreement comparable."""
+    requirements = {
+        DisagreementDimension.TIME_PERIOD: (
+            "Primary or official records covering the same time period for each claim."
+        ),
+        DisagreementDimension.GEOGRAPHIC_SCOPE: (
+            "Primary or official records with explicitly matched geographic scope."
+        ),
+        DisagreementDimension.DEFINITION_OR_METHOD: (
+            "Methodology notes or official definitions that make the measurements comparable."
+        ),
+        DisagreementDimension.POPULATION_OR_SAMPLE: (
+            "Primary data with a matched population or sampling frame."
+        ),
+        DisagreementDimension.TRANSLATION_AMBIGUITY: (
+            "Original-language passages and independently reviewed translations."
+        ),
+        DisagreementDimension.GENUINE_CONFLICT: (
+            "Additional independent primary or official records that directly address the conflicting proposition."
+        ),
+    }
+    needed = list(dict.fromkeys(requirements[cause.dimension] for cause in causes))
+    return needed or [
+        "Primary or official evidence that directly addresses the claim within the same scope."
+    ]
+
+
 def _render_statement_markdown(
     *,
     title: str,
@@ -223,6 +349,7 @@ def _render_statement_markdown(
     passages: list[EvidencePassage],
     sources: list[SourceRecord],
     qa_issues,
+    unresolved_disagreements: list[UnresolvedDisagreement],
 ) -> str:
     """Render persisted statements and stable passage citations as Markdown."""
     passages_by_id = {passage.id: passage for passage in passages}
@@ -247,9 +374,22 @@ def _render_statement_markdown(
             lines.append(
                 f"- [P:{citation_id}] {source_label} — {source_url} ({passage.locator})"
             )
+    if unresolved_disagreements:
+        lines.extend(["", "## Unresolved disagreements", ""])
+        for disagreement in unresolved_disagreements:
+            lines.extend([f"### Claim cluster {disagreement.cluster_id}", "", "**What conflicts:**"])
+            for claim_id, statement in zip(
+                disagreement.claim_ids, disagreement.conflicting_claims, strict=True
+            ):
+                status = disagreement.verification_statuses.get(str(claim_id), "unverified")
+                lines.append(f"- {statement} ({status})")
+            lines.extend(["", "**Why it may conflict:**"])
+            lines.extend(f"- {reason}" for reason in disagreement.why_it_may_conflict)
+            lines.extend(["", "**Evidence needed to resolve it:**"])
+            lines.extend(f"- {evidence}" for evidence in disagreement.evidence_needed)
+            lines.append("")
     warnings = [issue for issue in qa_issues if issue.severity == "warning"]
     if warnings:
         lines.extend(["", "## QA warnings", ""])
         lines.extend(f"- {warning.message}" for warning in warnings)
     return "\n".join(lines)
-

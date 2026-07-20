@@ -282,6 +282,25 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(
                     all(len(item.disagreement_assessments) == 6 for item in persisted)
                 )
+                self.assertTrue(
+                    all(set(item.confidence_factors) == {
+                        "directness",
+                        "source_quality",
+                        "independence",
+                        "scope_fit",
+                        "recency",
+                        "agreement",
+                        "translation_certainty",
+                    } for item in persisted)
+                )
+                self.assertTrue(
+                    all(
+                        item.verifier_model_id == "qwen3.7-plus"
+                        and item.verifier_prompt_version == "claim-cluster-verification-v2"
+                        and item.verified_at is not None
+                        for item in persisted
+                    )
+                )
                 self.assertIn(str(claim.claim_cluster_id), verifier.messages[0].content)
                 self.assertEqual(verifier.messages[0].content.count('"cluster_id"'), 1)
                 self.assertEqual(result["verification_results"], persisted)

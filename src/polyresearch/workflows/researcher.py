@@ -13,10 +13,11 @@ from langgraph.types import Command
 from polyresearch.evidence.claim_clustering import cluster_claims
 from polyresearch.configuration import Configuration
 from polyresearch.evidence.entity_resolution import resolve_claim_entities
+from polyresearch.evidence.verification_confidence import verification_confidence
 from polyresearch.models import (
     Claim, ClaimExtractionDraft, ClaimExtractionResult, ClaimClusterVerificationResult,
     EvidenceLink, EvidencePassage, ResearcherOutputState, ResearcherState,
-    SourceRecord, TranslationDraft, TranslationRecord, VerificationResult,
+    ResearchPlan, SourceRecord, TranslationDraft, TranslationRecord, VerificationResult,
     VerificationStatus,
 )
 from polyresearch.nodes.provenance import (
@@ -24,13 +25,18 @@ from polyresearch.nodes.provenance import (
     persist_non_tavily_tool_outputs as _persist_non_tavily_tool_outputs,
     serialize_artifacts as _serialize_artifacts,
 )
-from polyresearch.prompts import claim_cluster_verification_prompt, research_system_prompt
+from polyresearch.prompts import (
+    CLAIM_CLUSTER_VERIFICATION_PROMPT_VERSION,
+    claim_cluster_verification_prompt,
+    research_system_prompt,
+)
 from polyresearch.retrieval.source_ingestion import languages_match
 from polyresearch.runtime.model_utils import create_qwen_chat_model
 from polyresearch.retrieval.search_utils import select_citable_passages
 from polyresearch.runtime.text_utils import get_today_str
 from polyresearch.runtime.tool_registry import get_all_tools
 from polyresearch.evidence.value_normalization import normalize_claim_values
+from polyresearch.retrieval.search_providers import planned_web_search
 
 async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[Literal["researcher_tools"]]:
     """Individual researcher that conducts focused research on specific topics.
@@ -390,24 +396,42 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
     context, sources, passages, claims, evidence_links, existing_results = (
         await _load_evidence_ledger(config)
     )
-    verified_claim_ids = {result.claim_id for result in existing_results}
-    unverified_claims = [claim for claim in claims if claim.id not in verified_claim_ids]
-    if not unverified_claims:
+    translations = await context.repository.list_translations(context.run_id)
+    output_language = config.get("configurable", {}).get("output_language", "en")
+    latest_results_by_claim_id = _latest_results_by_claim_id(existing_results)
+    requested_cluster_ids = {
+        UUID(str(cluster_id))
+        for cluster_id in state.get("claim_cluster_ids_to_reverify", [])
+    }
+    claims_to_verify = [
+        claim
+        for claim in claims
+        if claim.id not in latest_results_by_claim_id
+        or (claim.claim_cluster_id or claim.id) in requested_cluster_ids
+    ]
+    if not claims_to_verify:
         return {
             "sources": sources,
             "passages": passages,
             "claims": claims,
             "verification_results": existing_results,
         }
+    configurable = Configuration.from_runnable_config(config)
+    verifier_model_id = configurable.compression_model
 
     links_by_claim_id: dict[UUID, list[EvidenceLink]] = {}
     for link in evidence_links:
-        links_by_claim_id.setdefault(link.claim_id, []).append(link)
+        # A re-verification always evaluates the original extraction links.  Prior
+        # verification links remain immutable provenance rather than becoming new
+        # input evidence and recursively multiplying the assessment set.
+        if link.origin == "claim_extraction":
+            links_by_claim_id.setdefault(link.claim_id, []).append(link)
     passages_by_id = {passage.id: passage for passage in passages}
     clusters: dict[UUID, list[Claim]] = {}
-    for claim in unverified_claims:
+    for claim in claims_to_verify:
         clusters.setdefault(claim.claim_cluster_id or claim.id, []).append(claim)
     results: list[VerificationResult] = []
+    verification_links: list[EvidenceLink] = []
     verifiable_clusters = {
         cluster_id: cluster_claims
         for cluster_id, cluster_claims in clusters.items()
@@ -426,6 +450,13 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                 status=VerificationStatus.INSUFFICIENT_EVIDENCE,
                 confidence=0.0,
                 rationale="No persisted claim-to-passage evidence is available for this claim cluster.",
+                attempt_number=_next_attempt_number(claim.id, latest_results_by_claim_id),
+                supersedes_verification_result_id=_superseded_result_id(
+                    claim.id, latest_results_by_claim_id
+                ),
+                trigger=_verification_trigger(claim, requested_cluster_ids),
+                verifier_model_id=verifier_model_id,
+                verifier_prompt_version=CLAIM_CLUSTER_VERIFICATION_PROMPT_VERSION,
             )
             for claim in cluster_claims
         )
@@ -467,7 +498,6 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
             },
             ensure_ascii=False,
         )
-        configurable = Configuration.from_runnable_config(config)
         verifier = create_qwen_chat_model(
             configurable,
             configurable.compression_model,
@@ -491,6 +521,11 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                 if draft.cluster_id in verifiable_clusters
                 and {assessment.claim_id for assessment in draft.claim_assessments}
                 == {claim.id for claim in verifiable_clusters[draft.cluster_id]}
+                and _has_complete_evidence_assessments(
+                    draft,
+                    verifiable_clusters[draft.cluster_id],
+                    links_by_claim_id,
+                )
             }
         except Exception:
             drafts_by_cluster_id = {}
@@ -504,6 +539,13 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
                         confidence=0.0,
                         rationale="Verification did not return a valid result for this claim cluster.",
                         evidence_link_ids=[link.id for link in links_by_claim_id.get(claim.id, [])],
+                        attempt_number=_next_attempt_number(claim.id, latest_results_by_claim_id),
+                        supersedes_verification_result_id=_superseded_result_id(
+                            claim.id, latest_results_by_claim_id
+                        ),
+                        trigger=_verification_trigger(claim, requested_cluster_ids),
+                        verifier_model_id=verifier_model_id,
+                        verifier_prompt_version=CLAIM_CLUSTER_VERIFICATION_PROMPT_VERSION,
                     )
                     for claim in cluster_claims
                 )
@@ -511,17 +553,38 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
             assessments_by_claim_id = {
                 assessment.claim_id: assessment for assessment in draft.claim_assessments
             }
-            results.extend(
-                VerificationResult(
-                    claim_id=claim.id,
-                    status=assessments_by_claim_id[claim.id].status,
-                    confidence=assessments_by_claim_id[claim.id].confidence,
-                    rationale=assessments_by_claim_id[claim.id].rationale,
-                    evidence_link_ids=[link.id for link in links_by_claim_id.get(claim.id, [])],
-                    disagreement_assessments=draft.disagreement_assessments,
+            for claim in cluster_claims:
+                assessment = assessments_by_claim_id[claim.id]
+                outcome_links = _verification_outcome_links(
+                    claim=claim,
+                    assessment=assessment,
+                    input_links=links_by_claim_id.get(claim.id, []),
                 )
-                for claim in cluster_claims
-            )
+                result = _verification_result_with_confidence(
+                    claim=claim,
+                    assessment=assessment,
+                    evidence_links=outcome_links,
+                    passages=passages,
+                    sources=sources,
+                    translations=translations,
+                    output_language=output_language,
+                    disagreement_assessments=draft.disagreement_assessments,
+                    previous_result=latest_results_by_claim_id.get(claim.id),
+                    trigger=_verification_trigger(claim, requested_cluster_ids),
+                    verifier_model_id=verifier_model_id,
+                    verifier_prompt_version=CLAIM_CLUSTER_VERIFICATION_PROMPT_VERSION,
+                )
+                outcome_links = [
+                    link.model_copy(update={"verification_result_id": result.id})
+                    for link in outcome_links
+                ]
+                result = result.model_copy(
+                    update={"evidence_link_ids": [link.id for link in outcome_links]}
+                )
+                results.append(result)
+                verification_links.extend(outcome_links)
+    if verification_links:
+        await context.repository.append_evidence_links(context.run_id, verification_links)
     await context.repository.append_verification_results(context.run_id, results)
     return {
         "sources": sources,
@@ -529,6 +592,224 @@ async def verify_claim_clusters(state: ResearcherState, config: RunnableConfig):
         "claims": claims,
         "verification_results": [*existing_results, *results],
     }
+
+
+def _verification_result_with_confidence(
+    *,
+    claim: Claim,
+    assessment,
+    evidence_links: list[EvidenceLink],
+    passages: list[EvidencePassage],
+    sources: list[SourceRecord],
+    translations: list[TranslationRecord],
+    output_language: str,
+    disagreement_assessments,
+    verifier_model_id: str,
+    verifier_prompt_version: str,
+    previous_result: VerificationResult | None = None,
+    trigger: Literal["initial_verification", "conflict_resolution"] = "initial_verification",
+) -> VerificationResult:
+    """Bind a Qwen claim classification to conservative evidence-derived confidence."""
+    confidence, confidence_factors, independent_source_count = verification_confidence(
+        claim=claim,
+        status=assessment.status,
+        model_confidence=assessment.confidence,
+        evidence_links=evidence_links,
+        passages=passages,
+        sources=sources,
+        translations=translations,
+        output_language=output_language,
+        disagreement_assessments=disagreement_assessments,
+    )
+    return VerificationResult(
+        claim_id=claim.id,
+        status=assessment.status,
+        confidence=confidence,
+        rationale=assessment.rationale,
+        disagreement_assessments=disagreement_assessments,
+        confidence_factors=confidence_factors,
+        independent_source_count=independent_source_count,
+        attempt_number=(previous_result.attempt_number + 1) if previous_result else 1,
+        supersedes_verification_result_id=previous_result.id if previous_result else None,
+        trigger=trigger,
+        verifier_model_id=verifier_model_id,
+        verifier_prompt_version=verifier_prompt_version,
+    )
+
+
+def _has_complete_evidence_assessments(
+    draft,
+    cluster_claims: list[Claim],
+    links_by_claim_id: dict[UUID, list[EvidenceLink]],
+) -> bool:
+    """Reject partial verifier link mappings while accepting legacy empty outputs."""
+    assessments_by_claim_id = {
+        assessment.claim_id: assessment for assessment in draft.claim_assessments
+    }
+    for claim in cluster_claims:
+        evidence_assessments = assessments_by_claim_id[claim.id].evidence_assessments
+        if not evidence_assessments:
+            continue
+        expected = {link.id for link in links_by_claim_id.get(claim.id, [])}
+        actual = {assessment.evidence_link_id for assessment in evidence_assessments}
+        if actual != expected or len(evidence_assessments) != len(expected):
+            return False
+    return True
+
+
+def _verification_outcome_links(
+    *,
+    claim: Claim,
+    assessment,
+    input_links: list[EvidenceLink],
+) -> list[EvidenceLink]:
+    """Append verifier-derived links without overwriting extraction provenance."""
+    relationship_by_input_id = {
+        evidence_assessment.evidence_link_id: evidence_assessment
+        for evidence_assessment in assessment.evidence_assessments
+    }
+    fallback_relationship = {
+        VerificationStatus.SUPPORTED: "supports",
+        VerificationStatus.CONTRADICTED: "contradicts",
+        VerificationStatus.PARTIALLY_SUPPORTED: "contextualizes",
+        VerificationStatus.INSUFFICIENT_EVIDENCE: "contextualizes",
+        VerificationStatus.OUTDATED: "contextualizes",
+        VerificationStatus.NOT_COMPARABLE: "contextualizes",
+    }[assessment.status]
+    return [
+        EvidenceLink(
+            claim_id=claim.id,
+            passage_id=input_link.passage_id,
+            relationship=(
+                evidence_assessment.relationship
+                if (evidence_assessment := relationship_by_input_id.get(input_link.id))
+                else fallback_relationship
+            ),
+            rationale=(
+                evidence_assessment.rationale
+                if evidence_assessment
+                else assessment.rationale
+            ),
+            origin="verification",
+        )
+        for input_link in input_links
+    ]
+def _latest_results_by_claim_id(
+    results: list[VerificationResult],
+) -> dict[UUID, VerificationResult]:
+    """Select the newest immutable verification attempt for each claim."""
+    latest: dict[UUID, VerificationResult] = {}
+    for result in results:
+        current = latest.get(result.claim_id)
+        if current is None or (result.attempt_number, result.created_at, str(result.id)) > (
+            current.attempt_number,
+            current.created_at,
+            str(current.id),
+        ):
+            latest[result.claim_id] = result
+    return latest
+
+
+def _next_attempt_number(
+    claim_id: UUID, latest_results: dict[UUID, VerificationResult]
+) -> int:
+    previous = latest_results.get(claim_id)
+    return previous.attempt_number + 1 if previous else 1
+
+
+def _superseded_result_id(
+    claim_id: UUID, latest_results: dict[UUID, VerificationResult]
+) -> UUID | None:
+    previous = latest_results.get(claim_id)
+    return previous.id if previous else None
+
+
+def _verification_trigger(
+    claim: Claim, requested_cluster_ids: set[UUID]
+) -> Literal["initial_verification", "conflict_resolution"]:
+    return (
+        "conflict_resolution"
+        if (claim.claim_cluster_id or claim.id) in requested_cluster_ids
+        else "initial_verification"
+    )
+
+
+async def resolve_conflicts(state: ResearcherState, config: RunnableConfig):
+    """Perform one bounded primary/official-source retrieval pass for conflicts."""
+    if state.get("conflict_resolution_attempted", False):
+        return Command(goto="__end__")
+    context, _, _, claims, _, results = await _load_evidence_ledger(config)
+    latest_results = _latest_results_by_claim_id(results)
+    has_material_conflict = any(
+        result.status is VerificationStatus.CONTRADICTED
+        or any(
+            assessment.dimension.value == "genuinely_conflicting_evidence"
+            and assessment.present
+            for assessment in result.disagreement_assessments
+        )
+        for result in latest_results.values()
+    )
+    if not has_material_conflict:
+        return Command(goto="__end__", update={"conflict_resolution_attempted": True})
+
+    raw_plan = config.get("configurable", {}).get("research_plan")
+    if raw_plan is None:
+        plans = await context.repository.list_research_plans(context.run_id)
+        raw_plan = plans[-1] if plans else None
+    if raw_plan is None:
+        return Command(goto="__end__", update={"conflict_resolution_attempted": True})
+    plan = raw_plan if isinstance(raw_plan, ResearchPlan) else ResearchPlan.model_validate(raw_plan)
+    requests = []
+    for language in plan.ranked_languages:
+        source_type = next(
+            (
+                candidate
+                for candidate in ("official", "primary")
+                if candidate in language.expected_source_types
+            ),
+            None,
+        )
+        variants = plan.query_variants.get(language.language, [])
+        if source_type and variants:
+            requests.append((variants[0], language.language, source_type))
+    selected_requests = requests[:3]
+    if not selected_requests:
+        return Command(goto="__end__", update={"conflict_resolution_attempted": True})
+    for query, language, source_type in selected_requests:
+        try:
+            await planned_web_search.coroutine(
+                query=query,
+                language=language,
+                target_source_type=source_type,
+                query_rationale=(
+                    "Conflict resolution: seek the strongest planned primary or official "
+                    "evidence before reporting consensus."
+                ),
+                config=config,
+            )
+        except Exception:
+            # The failed search is captured in query provenance by its provider path;
+            # do not turn unresolved conflict into a fabricated consensus.
+            continue
+    return Command(
+        goto="extract_claims",
+        update={
+            "conflict_resolution_attempted": True,
+            "claim_cluster_ids_to_reverify": list({
+                claim.claim_cluster_id or claim.id
+                for claim in claims
+                if (result := latest_results.get(claim.id))
+                and (
+                    result.status is VerificationStatus.CONTRADICTED
+                    or any(
+                        assessment.dimension.value == "genuinely_conflicting_evidence"
+                        and assessment.present
+                        for assessment in result.disagreement_assessments
+                    )
+                )
+            }),
+        },
+    )
 
 # Researcher Subgraph Construction
 # Creates individual researcher workflow for conducting focused research on specific topics
@@ -544,12 +825,14 @@ researcher_builder.add_node("researcher_tools", researcher_tools)     # Tool exe
 researcher_builder.add_node("extract_claims", extract_claims)         # Claim extraction
 researcher_builder.add_node("translate_claim_evidence", translate_claim_evidence)
 researcher_builder.add_node("verify_claim_clusters", verify_claim_clusters)
+researcher_builder.add_node("resolve_conflicts", resolve_conflicts)
 
 # Define researcher workflow edges
 researcher_builder.add_edge(START, "researcher")           # Entry point to researcher
 researcher_builder.add_edge("extract_claims", "translate_claim_evidence")
 researcher_builder.add_edge("translate_claim_evidence", "verify_claim_clusters")
-researcher_builder.add_edge("verify_claim_clusters", END)
+researcher_builder.add_edge("verify_claim_clusters", "resolve_conflicts")
+researcher_builder.add_edge("resolve_conflicts", END)
 
 # Compatibility alias for callers that used the Milestone 5 node name.
 verify_claims = verify_claim_clusters

@@ -26,6 +26,7 @@ GraphEdgeKind = Literal[
     "CONTRADICTS",
     "CONTEXTUALIZES",
     "VERIFIED_BY",
+    "SUPERSEDES",
     "RENDERED_AS",
 ]
 

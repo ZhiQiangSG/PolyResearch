@@ -286,6 +286,14 @@ async def build_provenance_graph(
         edges.append(
             _edge("VERIFIED_BY", f"claim:{result.claim_id}", f"verification_result:{result.id}")
         )
+        if result.supersedes_verification_result_id:
+            edges.append(
+                _edge(
+                    "SUPERSEDES",
+                    f"verification_result:{result.id}",
+                    f"verification_result:{result.supersedes_verification_result_id}",
+                )
+            )
     for statement in report_statements:
         for claim_id in statement.claim_ids:
             edges.append(_edge("RENDERED_AS", f"claim:{claim_id}", f"report_statement:{statement.id}"))

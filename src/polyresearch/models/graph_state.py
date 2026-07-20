@@ -19,6 +19,7 @@ from polyresearch.models.evidence import (
     EvidencePassage,
     SourceRecord,
     ReportQaIssue,
+    UnresolvedDisagreement,
     VerificationResult,
 )
 from polyresearch.models.research_run import LanguageExpansionDecision, ResearchPlan
@@ -59,6 +60,7 @@ class AgentState(MessagesState):
     claims: Annotated[list[Claim], merge_evidence_by_id]
     verification_results: Annotated[list[VerificationResult], merge_evidence_by_id]
     report_qa_issues: list[ReportQaIssue]
+    unresolved_disagreements: list[UnresolvedDisagreement]
     final_report: str
 
 
@@ -80,12 +82,14 @@ class ResearcherState(TypedDict):
 
     researcher_messages: Annotated[list[MessageLikeRepresentation], operator.add]
     tool_call_iterations: int = 0
+    conflict_resolution_attempted: bool
     research_topic: str
     research_unit_id: UUID
     sources: Annotated[list[SourceRecord], merge_evidence_by_id]
     passages: Annotated[list[EvidencePassage], merge_evidence_by_id]
     claims: Annotated[list[Claim], merge_evidence_by_id]
     verification_results: Annotated[list[VerificationResult], merge_evidence_by_id]
+    claim_cluster_ids_to_reverify: list[UUID]
 
 
 class ResearcherOutputState(BaseModel):

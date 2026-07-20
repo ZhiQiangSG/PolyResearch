@@ -233,6 +233,9 @@ After each search tool call, use think_tool to analyze the results:
 """
 
 
+CLAIM_CLUSTER_VERIFICATION_PROMPT_VERSION = "claim-cluster-verification-v2"
+
+
 claim_cluster_verification_prompt = """Verify each deterministic claim cluster against only its linked, original-language evidence passages.
 
 <VerificationLedger>
@@ -249,6 +252,7 @@ Verification rules:
 - Use `not_comparable` for evidence that cannot be compared on those dimensions, `outdated` where temporal fit makes the claim stale, and `insufficient_evidence` otherwise.
 - Treat translation uncertainty as a verification factor. Preserve uncertainty in the rationale; do not upgrade confidence because a translation is fluent.
 - Classify every claim as exactly one of: `supported`, `partially_supported`, `contradicted`, `insufficient_evidence`, `outdated`, or `not_comparable`. Different claims in the same cluster may receive different classifications when their wording or scope differs.
+- For every claim, classify every supplied evidence-link ID exactly once as `supports`, `contradicts`, or `contextualizes`, with a concise rationale. These relationships are durable provenance, so do not omit them or invent IDs.
 - For every cluster, assess every disagreement dimension exactly once. State whether the apparent disagreement is caused by: different time periods; different geographic scope; differing definitions or measurement methods; different populations or samples; translation ambiguity; or genuinely conflicting evidence. Mark `genuinely_conflicting_evidence` true only after ruling out the other dimensions.
 - Do not use any facts outside the ledger and do not invent evidence links, sources, passages, or claim IDs.
 """
@@ -280,6 +284,7 @@ Please create a detailed answer to the overall research brief that:
 3. References relevant sources using [Title](URL) format
 4. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the overall research question. People are using you for deep research and will expect detailed, comprehensive answers.
 5. Includes a "Sources" section at the end with all referenced links
+6. Never describe evidence as a consensus when a linked claim has a `contradicted`, `not_comparable`, or `insufficient_evidence` verification status. Explain the unresolved conflict and its primary/official-source retrieval limits instead.
 
 You can structure your report in a number of different ways. Here are some examples:
 

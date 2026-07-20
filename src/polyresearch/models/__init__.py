@@ -37,7 +37,9 @@ from polyresearch.models.evidence import (
     SourceVersion,
     TranslationRecord,
     TranslationDraft,
+    UnresolvedDisagreement,
     VerificationResult,
+    VerificationEvidenceAssessment,
     VerificationStatus,
 )
 from polyresearch.models.structured_outputs import (
@@ -119,9 +121,11 @@ __all__ = [
     "SourceVersion",
     "SupervisorState",
     "VerificationResult",
+    "VerificationEvidenceAssessment",
     "VerificationStatus",
     "TranslationRecord",
     "TranslationDraft",
+    "UnresolvedDisagreement",
     "TerminologyRecord",
     "override_reducer",
 ]
