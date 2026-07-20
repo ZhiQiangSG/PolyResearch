@@ -7,6 +7,7 @@ individual state channels. Pydantic contracts for model input and output live in
 
 import operator
 from typing import Annotated, Optional
+from uuid import UUID
 
 from langchain_core.messages import MessageLikeRepresentation
 from langgraph.graph import MessagesState
@@ -47,6 +48,7 @@ class AgentState(MessagesState):
 
     supervisor_messages: Annotated[list[MessageLikeRepresentation], override_reducer]
     research_brief: Optional[str]
+    run_id: UUID
     sources: Annotated[list[SourceRecord], merge_evidence_by_id]
     passages: Annotated[list[EvidencePassage], merge_evidence_by_id]
     claims: Annotated[list[Claim], merge_evidence_by_id]

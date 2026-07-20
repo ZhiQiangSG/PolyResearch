@@ -38,10 +38,12 @@ from polyresearch.models import (
     ResearcherOutputState,
     ResearcherState,
     ResearchQuestion,
+    ResearchRun,
     SourceRecord,
     SupervisorState,
     VerificationResult,
 )
+from polyresearch.repositories import RunContext
 from polyresearch.utils import (
     create_qwen_chat_model,
     get_all_tools,
@@ -50,6 +52,22 @@ from polyresearch.utils import (
     is_token_limit_exceeded,
     think_tool,
 )
+
+
+async def initialize_research_run(
+    state: AgentState, config: RunnableConfig
+) -> Command[Literal["clarify_with_user"]]:
+    """Create the durable run record before any model or tool work begins."""
+    context = RunContext.from_runnable_config(config)
+    configurable = config.get("configurable", {})
+    question = get_buffer_string(state.get("messages", [])).strip()
+    run = ResearchRun(
+        id=context.run_id,
+        question=question,
+        output_language=configurable.get("output_language", "en"),
+    )
+    await context.repository.create_run(run)
+    return Command(goto="clarify_with_user", update={"run_id": context.run_id})
 
 
 async def clarify_with_user(
@@ -762,13 +780,14 @@ graph_builder = StateGraph(
 )
 
 # Add main workflow nodes for the complete research process
+graph_builder.add_node("initialize_research_run", initialize_research_run)
 graph_builder.add_node("clarify_with_user", clarify_with_user)           # User clarification phase
 graph_builder.add_node("write_research_brief", write_research_brief)     # Research planning phase
 graph_builder.add_node("research_supervisor", supervisor_subgraph)       # Research execution phase
 graph_builder.add_node("final_report_generation", final_report_generation)  # Report generation phase
 
 # Define main workflow edges for sequential execution
-graph_builder.add_edge(START, "clarify_with_user")                       # Entry point
+graph_builder.add_edge(START, "initialize_research_run")                 # Durable run setup
 graph_builder.add_edge("research_supervisor", "final_report_generation") # Research to report
 graph_builder.add_edge("final_report_generation", END)                   # Final exit point
 

@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+import os
+from uuid import uuid4
 
 from langchain_core.messages import HumanMessage
 
@@ -23,12 +25,27 @@ def build_parser() -> argparse.ArgumentParser:
 async def run_query(query: str) -> str:
     """Run one research query and return the generated report."""
     from polyresearch.graph import graph
+    from polyresearch.repositories import SqliteEvidenceRepository
 
-    result = await graph.ainvoke(
-        {"messages": [HumanMessage(content=query)]},
-        {"configurable": {}},
+    repository = SqliteEvidenceRepository(
+        os.environ.get("POLYRESEARCH_DB_PATH", "polyresearch.db")
     )
-    return result.get("final_report", "")
+    try:
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage(content=query)]},
+            {
+                "configurable": {
+                    "run_id": str(uuid4()),
+                    "evidence_repository": repository,
+                    "output_language": os.environ.get(
+                        "POLYRESEARCH_OUTPUT_LANGUAGE", "en"
+                    ),
+                }
+            },
+        )
+        return result.get("final_report", "")
+    finally:
+        repository.close()
 
 
 def main() -> None:
