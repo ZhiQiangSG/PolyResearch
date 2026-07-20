@@ -76,6 +76,28 @@ Guidelines:
 - If the query is in a specific language, prioritize sources published in that language.
 """
 
+
+multilingual_planner_prompt = """Create a reproducible multilingual research plan for the research brief below.
+
+<ResearchBrief>
+{research_brief}
+</ResearchBrief>
+
+Today's date is {date}. The requested report language is {output_language}.
+The durable run ID is {run_id}; return it unchanged in the `run_id` field.
+
+Return only data matching the requested structured schema. Select research languages adaptively: do not use a fixed default language list. Consider the relevant places and jurisdictions, primary actors and official records, topic-specific scholarly/technical/media ecosystems, diaspora or regional coverage, primary-source availability, and each language's expected marginal information gain over languages ranked above it.
+
+Requirements:
+- Split the work into atomic, answerable subquestions.
+- Preserve each entity's canonical name, aliases, transliterations, and native-script variants; do not claim approximate translations are equivalent.
+- Rank only languages that are justified for this topic. Each ranked language needs a unique-value explanation, priority (1 is highest), and a positive query budget.
+- Supply native-language query variants for every selected language, appropriate expected source types and preferred domains where known.
+- Anticipate material conflict dimensions, including date, geography, definitions, methodology, sample, and translation ambiguity when relevant.
+- Use `language_rationale` as a concise selected-or-skipped decision record. Include skipped languages only when their omission needs explanation.
+- Keep the plan evidence-seeking and conservative; it must guide discovery, not assert facts.
+"""
+
 lead_researcher_prompt = """You are a research supervisor. Your job is to conduct research by calling the "ConductResearch" tool. For context, today's date is {date}.
 
 <Task>

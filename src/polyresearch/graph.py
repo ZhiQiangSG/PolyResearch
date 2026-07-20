@@ -23,6 +23,7 @@ from polyresearch.prompts import (
     clarify_with_user_instructions,
     final_report_generation_prompt,
     lead_researcher_prompt,
+    multilingual_planner_prompt,
     research_system_prompt,
     transform_messages_into_research_topic_prompt,
 )
@@ -40,6 +41,7 @@ from polyresearch.models import (
     ResearcherOutputState,
     ResearcherState,
     ResearchQuestion,
+    ResearchPlan,
     ResearchRun,
     ReportBundle,
     ReportDraft,
@@ -143,19 +145,18 @@ async def clarify_with_user(
         )
 
 
-async def write_research_brief(state: AgentState, config: RunnableConfig) -> Command[Literal["research_supervisor"]]:
-    """Transform user messages into a structured research brief and initialize supervisor.
+async def write_research_brief(state: AgentState, config: RunnableConfig) -> Command[Literal["multilingual_planner"]]:
+    """Transform user messages into a structured research brief.
     
     This function analyzes the user's messages and generates a focused research brief
-    that will guide the research supervisor. It also sets up the initial supervisor
-    context with appropriate prompts and instructions.
+    that will guide the multilingual planning step.
     
     Args:
         state: Current agent state containing user messages
         config: Runtime configuration with model settings
         
     Returns:
-        Command to proceed to research supervisor with initialized context
+        Command to proceed to multilingual planning
     """
     # Step 1: Set up the research model for structured output
     configurable = Configuration.from_runnable_config(config)
@@ -183,7 +184,56 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
         await research_model.ainvoke([HumanMessage(content=prompt_content)])
     )
     
-    # Step 3: Initialize supervisor with research brief and instructions
+    # The multilingual planner owns supervisor initialization so the durable plan
+    # is present in the supervisor's first context window.
+    return Command(
+        goto="multilingual_planner",
+        update={"research_brief": response.research_brief},
+    )
+
+
+async def multilingual_planner(
+    state: AgentState, config: RunnableConfig
+) -> Command[Literal["research_supervisor"]]:
+    """Create and persist Qwen's adaptive, structured multilingual research plan."""
+    configurable = Configuration.from_runnable_config(config)
+    context = RunContext.from_runnable_config(config)
+    planner_model = create_qwen_chat_model(
+        configurable,
+        configurable.research_model,
+        configurable.research_model_max_tokens,
+        config,
+    ).with_structured_output(ResearchPlan).with_retry(
+        stop_after_attempt=configurable.max_structured_output_retries
+    )
+    research_brief = state.get("research_brief") or ""
+    planned = cast(
+        ResearchPlan,
+        await planner_model.ainvoke(
+            [
+                HumanMessage(
+                    content=multilingual_planner_prompt.format(
+                        research_brief=research_brief,
+                        date=get_today_str(),
+                        output_language=config.get("configurable", {}).get(
+                            "output_language", "en"
+                        ),
+                        run_id=context.run_id,
+                    )
+                )
+            ]
+        ),
+    )
+    # The model must not choose an identity for a different run.
+    plan = planned.model_copy(
+        update={
+            "run_id": context.run_id,
+            "model_id": configurable.research_model,
+            "prompt_version": "multilingual_planner_v1",
+        }
+    )
+    await context.repository.append_research_plans(context.run_id, [plan])
+
     supervisor_system_prompt = lead_researcher_prompt.format(
         date=get_today_str(),
         max_concurrent_research_units=configurable.max_concurrent_research_units,
@@ -198,9 +248,16 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
                 "type": "override",
                 "value": [
                     SystemMessage(content=supervisor_system_prompt),
-                    HumanMessage(content=response.research_brief)
+                    HumanMessage(
+                        content=(
+                            f"Research brief:\n{research_brief}\n\n"
+                            "Persisted multilingual research plan:\n"
+                            f"{plan.model_dump_json()}"
+                        )
+                    )
                 ]
-            }
+            },
+            "research_plan": plan,
         }
     )
 
@@ -992,6 +1049,7 @@ graph_builder = StateGraph(
 graph_builder.add_node("initialize_research_run", initialize_research_run)
 graph_builder.add_node("clarify_with_user", clarify_with_user)           # User clarification phase
 graph_builder.add_node("write_research_brief", write_research_brief)     # Research planning phase
+graph_builder.add_node("multilingual_planner", multilingual_planner)      # Adaptive language planning
 graph_builder.add_node("research_supervisor", supervisor_subgraph)       # Research execution phase
 graph_builder.add_node("final_report_generation", final_report_generation)  # Report generation phase
 

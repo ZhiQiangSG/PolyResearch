@@ -20,6 +20,7 @@ from polyresearch.models.evidence import (
     SourceRecord,
     VerificationResult,
 )
+from polyresearch.models.research_run import ResearchPlan
 
 
 def override_reducer(current_value, new_value):
@@ -48,6 +49,7 @@ class AgentState(MessagesState):
 
     supervisor_messages: Annotated[list[MessageLikeRepresentation], override_reducer]
     research_brief: Optional[str]
+    research_plan: Optional[ResearchPlan]
     run_id: UUID
     sources: Annotated[list[SourceRecord], merge_evidence_by_id]
     passages: Annotated[list[EvidencePassage], merge_evidence_by_id]

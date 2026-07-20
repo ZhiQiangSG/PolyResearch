@@ -32,7 +32,12 @@ from polyresearch.models.structured_outputs import (
     ResearchComplete,
     ResearchQuestion,
 )
-from polyresearch.models.research_run import ResearchPlan, ResearchRun
+from polyresearch.models.research_run import (
+    ResearchEntity,
+    ResearchLanguage,
+    ResearchPlan,
+    ResearchRun,
+)
 
 __all__ = [
     "AgentInputState",
@@ -49,6 +54,8 @@ __all__ = [
     "ResearcherOutputState",
     "ResearcherState",
     "ResearchQuestion",
+    "ResearchEntity",
+    "ResearchLanguage",
     "ResearchPlan",
     "ResearchRun",
     "ReportBundle",
