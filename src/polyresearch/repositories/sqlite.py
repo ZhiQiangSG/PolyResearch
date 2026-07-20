@@ -1,7 +1,9 @@
 """SQLite implementation of the local PolyResearch evidence ledger."""
 
+import asyncio
 import json
 import sqlite3
+import threading
 from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -61,8 +63,9 @@ class SqliteEvidenceRepository(EvidenceRepository):
         self.database_path = str(database_path)
         if self.database_path != ":memory:":
             Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.database_path)
+        self._connection = sqlite3.connect(self.database_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
+        self._database_lock = threading.RLock()
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._migrate()
@@ -186,7 +189,18 @@ class SqliteEvidenceRepository(EvidenceRepository):
         ).fetchall()
         return [model_type.model_validate_json(row["payload"]) for row in rows]
 
+    async def _execute(self, operation, *args):
+        """Run one serialized SQLite operation outside the event-loop thread."""
+        return await asyncio.to_thread(self._execute_locked, operation, *args)
+
+    def _execute_locked(self, operation, *args):
+        with self._database_lock:
+            return operation(*args)
+
     async def create_run(self, run: ResearchRun) -> None:
+        await self._execute(self._create_run, run)
+
+    def _create_run(self, run: ResearchRun) -> None:
         with self._transaction():
             payload = self._payload(run)
             existing = self._connection.execute(
@@ -204,6 +218,9 @@ class SqliteEvidenceRepository(EvidenceRepository):
             )
 
     async def get_run(self, run_id: UUID) -> ResearchRun:
+        return await self._execute(self._get_run, run_id)
+
+    def _get_run(self, run_id: UUID) -> ResearchRun:
         row = self._connection.execute(
             "SELECT payload FROM research_runs WHERE id = ?", (str(run_id),)
         ).fetchone()
@@ -212,42 +229,68 @@ class SqliteEvidenceRepository(EvidenceRepository):
         return ResearchRun.model_validate_json(row["payload"])
 
     async def append_research_plans(self, run_id: UUID, plans: Sequence[ResearchPlan]) -> None:
+        await self._execute(self._append_research_plans, run_id, plans)
+
+    def _append_research_plans(self, run_id: UUID, plans: Sequence[ResearchPlan]) -> None:
         with self._transaction():
             self._append("research_plans", run_id, plans)
 
     async def append_query_records(self, run_id: UUID, queries: Sequence[QueryRecord]) -> None:
+        await self._execute(self._append_query_records, run_id, queries)
+
+    def _append_query_records(self, run_id: UUID, queries: Sequence[QueryRecord]) -> None:
         with self._transaction():
             self._append("query_records", run_id, queries)
 
     async def append_provenance_attachments(
         self, run_id: UUID, attachments: Sequence[ProvenanceAttachment]
     ) -> None:
+        await self._execute(self._append_provenance_attachments, run_id, attachments)
+
+    def _append_provenance_attachments(
+        self, run_id: UUID, attachments: Sequence[ProvenanceAttachment]
+    ) -> None:
         with self._transaction():
             self._append("provenance_attachments", run_id, attachments)
 
     async def append_sources(self, run_id: UUID, sources: Sequence[SourceRecord]) -> None:
+        await self._execute(self._append_sources, run_id, sources)
+
+    def _append_sources(self, run_id: UUID, sources: Sequence[SourceRecord]) -> None:
         with self._transaction():
             self._append("sources", run_id, sources)
 
     async def append_source_versions(self, run_id: UUID, versions: Sequence[SourceVersion]) -> None:
+        await self._execute(self._append_source_versions, run_id, versions)
+
+    def _append_source_versions(self, run_id: UUID, versions: Sequence[SourceVersion]) -> None:
         with self._transaction():
             for version in versions:
                 self._ensure_artifact("sources", run_id, version.source_id)
             self._append("source_versions", run_id, versions)
 
     async def append_passages(self, run_id: UUID, passages: Sequence[EvidencePassage]) -> None:
+        await self._execute(self._append_passages, run_id, passages)
+
+    def _append_passages(self, run_id: UUID, passages: Sequence[EvidencePassage]) -> None:
         with self._transaction():
             for passage in passages:
                 self._ensure_artifact("sources", run_id, passage.source_id)
             self._append("passages", run_id, passages)
 
     async def append_translations(self, run_id: UUID, translations: Sequence[TranslationRecord]) -> None:
+        await self._execute(self._append_translations, run_id, translations)
+
+    def _append_translations(self, run_id: UUID, translations: Sequence[TranslationRecord]) -> None:
         with self._transaction():
             for translation in translations:
                 self._ensure_artifact("passages", run_id, translation.passage_id)
             self._append("translations", run_id, translations)
 
     async def append_claims(self, run_id: UUID, claims: Sequence[Claim]) -> None:
+        await self._execute(self._append_claims, run_id, claims)
+
+    def _append_claims(self, run_id: UUID, claims: Sequence[Claim]) -> None:
         with self._transaction():
             for claim in claims:
                 for passage_id in claim.evidence_passage_ids:
@@ -255,6 +298,9 @@ class SqliteEvidenceRepository(EvidenceRepository):
             self._append("claims", run_id, claims)
 
     async def append_evidence_links(self, run_id: UUID, evidence_links: Sequence[EvidenceLink]) -> None:
+        await self._execute(self._append_evidence_links, run_id, evidence_links)
+
+    def _append_evidence_links(self, run_id: UUID, evidence_links: Sequence[EvidenceLink]) -> None:
         with self._transaction():
             for link in evidence_links:
                 self._ensure_artifact("claims", run_id, link.claim_id)
@@ -262,6 +308,9 @@ class SqliteEvidenceRepository(EvidenceRepository):
             self._append("evidence_links", run_id, evidence_links)
 
     async def append_verification_results(self, run_id: UUID, results: Sequence[VerificationResult]) -> None:
+        await self._execute(self._append_verification_results, run_id, results)
+
+    def _append_verification_results(self, run_id: UUID, results: Sequence[VerificationResult]) -> None:
         with self._transaction():
             for result in results:
                 self._ensure_artifact("claims", run_id, result.claim_id)
@@ -270,6 +319,9 @@ class SqliteEvidenceRepository(EvidenceRepository):
             self._append("verification_results", run_id, results)
 
     async def append_report_statements(self, run_id: UUID, statements: Sequence[ReportStatement]) -> None:
+        await self._execute(self._append_report_statements, run_id, statements)
+
+    def _append_report_statements(self, run_id: UUID, statements: Sequence[ReportStatement]) -> None:
         with self._transaction():
             for statement in statements:
                 for claim_id in statement.claim_ids:
@@ -277,43 +329,50 @@ class SqliteEvidenceRepository(EvidenceRepository):
             self._append("report_statements", run_id, statements)
 
     async def append_report_bundles(self, run_id: UUID, bundles: Sequence[ReportBundle]) -> None:
+        await self._execute(self._append_report_bundles, run_id, bundles)
+
+    def _append_report_bundles(self, run_id: UUID, bundles: Sequence[ReportBundle]) -> None:
         with self._transaction():
             self._append("report_bundles", run_id, bundles)
 
     async def list_research_plans(self, run_id: UUID) -> list[ResearchPlan]:
-        return self._list("research_plans", run_id, ResearchPlan)
+        return await self._execute(self._list, "research_plans", run_id, ResearchPlan)
 
     async def list_query_records(self, run_id: UUID) -> list[QueryRecord]:
-        return self._list("query_records", run_id, QueryRecord)
+        return await self._execute(self._list, "query_records", run_id, QueryRecord)
 
     async def list_provenance_attachments(
         self, run_id: UUID
     ) -> list[ProvenanceAttachment]:
-        return self._list("provenance_attachments", run_id, ProvenanceAttachment)
+        return await self._execute(
+            self._list, "provenance_attachments", run_id, ProvenanceAttachment
+        )
 
     async def list_sources(self, run_id: UUID) -> list[SourceRecord]:
-        return self._list("sources", run_id, SourceRecord)
+        return await self._execute(self._list, "sources", run_id, SourceRecord)
 
     async def list_source_versions(self, run_id: UUID) -> list[SourceVersion]:
-        return self._list("source_versions", run_id, SourceVersion)
+        return await self._execute(self._list, "source_versions", run_id, SourceVersion)
 
     async def list_passages(self, run_id: UUID) -> list[EvidencePassage]:
-        return self._list("passages", run_id, EvidencePassage)
+        return await self._execute(self._list, "passages", run_id, EvidencePassage)
 
     async def list_translations(self, run_id: UUID) -> list[TranslationRecord]:
-        return self._list("translations", run_id, TranslationRecord)
+        return await self._execute(self._list, "translations", run_id, TranslationRecord)
 
     async def list_claims(self, run_id: UUID) -> list[Claim]:
-        return self._list("claims", run_id, Claim)
+        return await self._execute(self._list, "claims", run_id, Claim)
 
     async def list_evidence_links(self, run_id: UUID) -> list[EvidenceLink]:
-        return self._list("evidence_links", run_id, EvidenceLink)
+        return await self._execute(self._list, "evidence_links", run_id, EvidenceLink)
 
     async def list_verification_results(self, run_id: UUID) -> list[VerificationResult]:
-        return self._list("verification_results", run_id, VerificationResult)
+        return await self._execute(
+            self._list, "verification_results", run_id, VerificationResult
+        )
 
     async def list_report_statements(self, run_id: UUID) -> list[ReportStatement]:
-        return self._list("report_statements", run_id, ReportStatement)
+        return await self._execute(self._list, "report_statements", run_id, ReportStatement)
 
     async def list_report_bundles(self, run_id: UUID) -> list[ReportBundle]:
-        return self._list("report_bundles", run_id, ReportBundle)
+        return await self._execute(self._list, "report_bundles", run_id, ReportBundle)

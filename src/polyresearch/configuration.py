@@ -49,9 +49,6 @@ class Configuration(BaseModel):
     # Model Configuration
     model_provider: ModelProvider = Field(default=ModelProvider.QWEN_OPENAI_COMPATIBLE)
     qwen_base_url: str = Field(default=DEFAULT_QWEN_BASE_URL)
-    summarization_model: str = Field(default="qwen3.6-plus")
-    summarization_model_max_tokens: int = Field(default=8192)
-    max_content_length: int = Field(default=50000)
     research_model: str = Field(default="qwen3.7-max")
     research_model_max_tokens: int = Field(default=10000)
     compression_model: str = Field(default="qwen3.7-plus")
@@ -79,7 +76,6 @@ class Configuration(BaseModel):
         return normalized
 
     @field_validator(
-        "summarization_model",
         "research_model",
         "compression_model",
         "final_report_model",

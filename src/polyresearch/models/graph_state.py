@@ -74,6 +74,7 @@ class ResearcherState(TypedDict):
     researcher_messages: Annotated[list[MessageLikeRepresentation], operator.add]
     tool_call_iterations: int = 0
     research_topic: str
+    research_unit_id: UUID
     sources: Annotated[list[SourceRecord], merge_evidence_by_id]
     passages: Annotated[list[EvidencePassage], merge_evidence_by_id]
     claims: Annotated[list[Claim], merge_evidence_by_id]

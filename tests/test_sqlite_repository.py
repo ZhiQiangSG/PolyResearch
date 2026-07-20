@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -22,6 +23,27 @@ from polyresearch.repositories import SqliteEvidenceRepository
 
 
 class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repository_io_runs_off_the_event_loop_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(question="What changed?", output_language="en")
+            observed_thread_ids = []
+            original_get_run = repository._get_run
+
+            def observe_get_run(run_id):
+                observed_thread_ids.append(threading.get_ident())
+                return original_get_run(run_id)
+
+            repository._get_run = observe_get_run
+            try:
+                await repository.create_run(run)
+                await repository.get_run(run.id)
+
+                self.assertEqual(len(observed_thread_ids), 1)
+                self.assertNotEqual(observed_thread_ids[0], threading.get_ident())
+            finally:
+                repository.close()
+
     async def test_round_trips_the_full_evidence_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")

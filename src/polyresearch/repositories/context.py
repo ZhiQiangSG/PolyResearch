@@ -14,6 +14,7 @@ class RunContext:
 
     run_id: UUID
     repository: EvidenceRepository
+    research_unit_id: UUID | None = None
 
     @classmethod
     def from_runnable_config(cls, config: RunnableConfig) -> "RunContext":
@@ -21,9 +22,14 @@ class RunContext:
         configurable = config.get("configurable", {})
         run_id = configurable.get("run_id")
         repository = configurable.get("evidence_repository")
+        research_unit_id = configurable.get("research_unit_id")
         if run_id is None or repository is None:
             raise ValueError(
                 "LangGraph requires configurable.run_id and "
                 "configurable.evidence_repository for durable research runs."
             )
-        return cls(run_id=UUID(str(run_id)), repository=repository)
+        return cls(
+            run_id=UUID(str(run_id)),
+            repository=repository,
+            research_unit_id=(UUID(str(research_unit_id)) if research_unit_id else None),
+        )

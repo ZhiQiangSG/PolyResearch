@@ -1,6 +1,7 @@
 import asyncio
 import json
 from typing import Literal, cast
+from uuid import uuid4
 
 from langchain_core.messages import (
     AIMessage,
@@ -42,6 +43,7 @@ from polyresearch.models import (
     ResearchRun,
     ReportBundle,
     ReportDraft,
+    ReportQaIssue,
     ReportStatement,
     SourceRecord,
     SupervisorState,
@@ -271,7 +273,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     most_recent_message = cast(AIMessage, supervisor_messages[-1])
     
     # Define exit criteria for research phase
-    exceeded_allowed_iterations = research_iterations > configurable.max_researcher_iterations
+    exceeded_allowed_iterations = research_iterations >= configurable.max_researcher_iterations
     no_tool_calls = not most_recent_message.tool_calls
     research_complete_tool_call = any(
         tool_call["name"] == "ResearchComplete" 
@@ -316,14 +318,24 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             overflow_conduct_research_calls = conduct_research_calls[configurable.max_concurrent_research_units:]
             
             # Execute research tasks in parallel
+            research_units = [
+                (tool_call, uuid4()) for tool_call in allowed_conduct_research_calls
+            ]
             research_tasks = [
                 researcher_subgraph.ainvoke({
                     "researcher_messages": [
                         HumanMessage(content=tool_call["args"]["research_topic"])
                     ],
-                    "research_topic": tool_call["args"]["research_topic"]
-                }, config) 
-                for tool_call in allowed_conduct_research_calls
+                    "research_topic": tool_call["args"]["research_topic"],
+                    "research_unit_id": research_unit_id,
+                }, {
+                    **config,
+                    "configurable": {
+                        **config.get("configurable", {}),
+                        "research_unit_id": str(research_unit_id),
+                    },
+                })
+                for tool_call, research_unit_id in research_units
             ]
             
             tool_results = await asyncio.gather(*research_tasks, return_exceptions=True)
@@ -491,7 +503,41 @@ async def _load_evidence_ledger(config: RunnableConfig):
         repository.list_evidence_links(context.run_id),
         repository.list_verification_results(context.run_id),
     )
-    return context, sources, passages, claims, evidence_links, verification_results
+    if context.research_unit_id is None:
+        return context, sources, passages, claims, evidence_links, verification_results
+
+    scoped_sources = [
+        source
+        for source in sources
+        if source.research_unit_id == context.research_unit_id
+    ]
+    scoped_source_ids = {source.id for source in scoped_sources}
+    scoped_passages = [
+        passage for passage in passages if passage.source_id in scoped_source_ids
+    ]
+    scoped_passage_ids = {passage.id for passage in scoped_passages}
+    scoped_claims = [
+        claim
+        for claim in claims
+        if set(claim.evidence_passage_ids).issubset(scoped_passage_ids)
+    ]
+    scoped_claim_ids = {claim.id for claim in scoped_claims}
+    scoped_links = [
+        link
+        for link in evidence_links
+        if link.claim_id in scoped_claim_ids and link.passage_id in scoped_passage_ids
+    ]
+    scoped_results = [
+        result for result in verification_results if result.claim_id in scoped_claim_ids
+    ]
+    return (
+        context,
+        scoped_sources,
+        scoped_passages,
+        scoped_claims,
+        scoped_links,
+        scoped_results,
+    )
 
 
 def _researcher_evidence_summary(observation: dict) -> str:
@@ -775,6 +821,14 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
                 passages=passages,
                 sources=sources,
             )
+            if not statements:
+                qa_issues.append(
+                    ReportQaIssue(
+                        code="no_report_statements",
+                        severity="error",
+                        message="Report draft produced no resolvable factual statements.",
+                    )
+                )
             qa_errors = [issue for issue in qa_issues if issue.severity == "error"]
             if qa_errors:
                 return {
@@ -862,12 +916,11 @@ def _build_report_statements(
     }
     statements: list[ReportStatement] = []
     for draft in report_draft.statements:
-        if not set(draft.claim_ids).issubset(claims_by_id):
-            continue
         citation_ids = list(
             dict.fromkeys(
                 passage_id
                 for claim_id in draft.claim_ids
+                if claim_id in claims_by_id
                 for passage_id in claims_by_id[claim_id].evidence_passage_ids
             )
         )

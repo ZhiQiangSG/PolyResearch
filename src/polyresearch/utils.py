@@ -14,9 +14,7 @@ import aiohttp
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
-    AIMessage,
     HumanMessage,
-    MessageLikeRepresentation,
     filter_messages,
 )
 from langchain_core.runnables import RunnableConfig
@@ -101,6 +99,7 @@ async def tavily_search(
             canonical_url=result["url"],
             title=result.get("title") or result["url"],
             content_hash=content_hash,
+            research_unit_id=_research_unit_id_from_config(config),
         )
         source_version = SourceVersion(
             source_id=source.id,
@@ -181,6 +180,7 @@ async def _persist_tavily_ingestion(
     query_records = [
         QueryRecord(
             run_id=context.run_id,
+            research_unit_id=context.research_unit_id,
             query=query,
             language=query_language,
             provider="tavily",
@@ -202,6 +202,16 @@ async def _persist_tavily_ingestion(
     await context.repository.append_sources(context.run_id, sources)
     await context.repository.append_source_versions(context.run_id, source_versions)
     await context.repository.append_passages(context.run_id, passages)
+
+
+def _research_unit_id_from_config(config: RunnableConfig | None):
+    """Read the optional unit scope used to isolate parallel researchers."""
+    if not config:
+        return None
+    try:
+        return RunContext.from_runnable_config(config).research_unit_id
+    except ValueError:
+        return None
 
 async def tavily_search_async(
     search_queries, 
@@ -670,27 +680,6 @@ def get_model_token_limit(model_string) -> int:
     
     # Model not found in lookup table
     return None
-
-def remove_up_to_last_ai_message(messages: list[MessageLikeRepresentation]) -> list[MessageLikeRepresentation]:
-    """Truncate message history by removing up to the last AI message.
-    
-    This is useful for handling token limit exceeded errors by removing recent context.
-    
-    Args:
-        messages: List of message objects to truncate
-        
-    Returns:
-        Truncated message list up to (but not including) the last AI message
-    """
-    # Search backwards through messages to find the last AI message
-    for i in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[i], AIMessage):
-            # Return everything up to (but not including) the last AI message
-            return messages[:i]
-    
-    # No AI messages found, return original list
-    return messages
-
 
 # --- Misc Utils ---
 

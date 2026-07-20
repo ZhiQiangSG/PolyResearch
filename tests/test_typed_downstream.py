@@ -163,3 +163,58 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 graph_module.create_qwen_chat_model = original_factory
                 repository.close()
+
+    async def test_claim_extraction_isolated_to_its_research_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(
+                id=uuid4(), question="What changed?", output_language="en"
+            )
+            unit_a, unit_b = uuid4(), uuid4()
+            source_a = SourceRecord(
+                canonical_url="https://example.test/a",
+                title="Unit A",
+                research_unit_id=unit_a,
+            )
+            source_b = SourceRecord(
+                canonical_url="https://example.test/b",
+                title="Unit B",
+                research_unit_id=unit_b,
+            )
+            passage_a = EvidencePassage(
+                source_id=source_a.id, text="Unit A evidence.", locator="paragraph-1"
+            )
+            passage_b = EvidencePassage(
+                source_id=source_b.id, text="Unit B evidence.", locator="paragraph-1"
+            )
+            claim_a = Claim(
+                statement="Unit A claim.",
+                evidence_passage_ids=[passage_a.id],
+                extraction_confidence=0.9,
+            )
+            extractor = _ClaimExtractorStub(claim_a)
+            original_factory = graph_module.create_qwen_chat_model
+            graph_module.create_qwen_chat_model = lambda *args, **kwargs: extractor
+            try:
+                await repository.create_run(run)
+                await repository.append_sources(run.id, [source_a, source_b])
+                await repository.append_passages(run.id, [passage_a, passage_b])
+
+                await graph_module.extract_claims(
+                    {},
+                    {
+                        "configurable": {
+                            "run_id": str(run.id),
+                            "research_unit_id": str(unit_a),
+                            "evidence_repository": repository,
+                        }
+                    },
+                )
+
+                ledger_content = extractor.messages[1].content
+                self.assertIn(str(source_a.id), ledger_content)
+                self.assertNotIn(str(source_b.id), ledger_content)
+                self.assertEqual(await repository.list_claims(run.id), [claim_a])
+            finally:
+                graph_module.create_qwen_chat_model = original_factory
+                repository.close()

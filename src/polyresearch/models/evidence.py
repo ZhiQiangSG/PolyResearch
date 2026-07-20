@@ -30,6 +30,7 @@ class SourceRecord(BaseModel):
     source_type: str = "web"
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     content_hash: str | None = None
+    research_unit_id: UUID | None = None
 
 
 class SourceVersion(BaseModel):
@@ -72,6 +73,7 @@ class QueryRecord(BaseModel):
 
     id: UUID = Field(default_factory=uuid4)
     run_id: UUID
+    research_unit_id: UUID | None = None
     query: str = Field(min_length=1)
     language: str = Field(min_length=1)
     provider: str = Field(min_length=1)
