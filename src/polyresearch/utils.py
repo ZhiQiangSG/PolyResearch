@@ -58,6 +58,7 @@ TAVILY_SEARCH_DESCRIPTION = (
 )
 
 _TRACKING_QUERY_PARAMETERS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+_PASSAGE_SELECTION_LIMIT = 12
 
 
 def canonicalize_url(url: str) -> str:
@@ -118,7 +119,7 @@ async def tavily_search(
         config: Runtime configuration for API keys and model settings
 
     Returns:
-        Formatted string containing summarized search results
+        JSON evidence payload containing selected, citable original passages
     """
     # Step 1: Execute search queries asynchronously
     search_results = await tavily_search_async(
@@ -258,12 +259,18 @@ async def tavily_search(
         source_versions=source_versions,
         passages=passages,
     )
+    selected_passages = select_citable_passages(sources, passages, " ".join(queries))
 
     return json.dumps(
         {
             "type": "polyresearch_evidence",
             "sources": [source.model_dump(mode="json") for source in sources],
-            "passages": [passage.model_dump(mode="json") for passage in passages],
+            "passages": [passage.model_dump(mode="json") for passage in selected_passages],
+            "selection": {
+                "method": "deterministic_query_passage_ranking_v1",
+                "selected_passage_ids": [str(passage.id) for passage in selected_passages],
+                "supplemental_summaries": [],
+            },
         },
         ensure_ascii=False,
     )
@@ -311,6 +318,37 @@ def _chunk_evidence_passages(
             )
         )
     return passages
+
+
+def select_citable_passages(
+    sources: list[SourceRecord],
+    passages: list[EvidencePassage],
+    query: str,
+    *,
+    limit: int = _PASSAGE_SELECTION_LIMIT,
+) -> list[EvidencePassage]:
+    """Rank exact original passages for a query; never synthesize a summary."""
+    if limit < 1:
+        return []
+    source_by_id = {source.id: source for source in sources}
+    query_terms = set(re.findall(r"\w+", query.casefold(), re.UNICODE))
+
+    def score(passage: EvidencePassage) -> tuple[float, str]:
+        source = source_by_id.get(passage.source_id)
+        text_terms = set(re.findall(r"\w+", passage.text.casefold(), re.UNICODE))
+        title_terms = set(
+            re.findall(r"\w+", source.title.casefold(), re.UNICODE) if source else []
+        )
+        query_coverage = len(query_terms & text_terms) / len(query_terms) if query_terms else 0.0
+        title_coverage = len(query_terms & title_terms) / len(query_terms) if query_terms else 0.0
+        quality = (
+            source.initial_quality_assessment.score
+            if source and source.initial_quality_assessment
+            else 0.5
+        )
+        return (query_coverage * 0.75 + title_coverage * 0.15 + quality * 0.10, str(passage.id))
+
+    return sorted(passages, key=score, reverse=True)[:limit]
 
 
 async def _deduplicate_source_artifacts(

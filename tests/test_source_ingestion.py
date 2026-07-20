@@ -2,7 +2,7 @@ import unittest
 
 from polyresearch.models import SourceRecord
 from polyresearch.source_ingestion import detect_language, extract_document, languages_match
-from polyresearch.utils import _chunk_evidence_passages
+from polyresearch.utils import _chunk_evidence_passages, select_citable_passages
 
 
 class SourceIngestionTests(unittest.TestCase):
@@ -81,3 +81,14 @@ class SourceIngestionTests(unittest.TestCase):
             passages[1].character_start,
             len("First original sentence.\n\n"),
         )
+
+    def test_passage_selection_returns_original_text_not_a_generated_summary(self) -> None:
+        source = SourceRecord(canonical_url="https://example.test/source", title="Policy update")
+        passages = _chunk_evidence_passages(
+            source, "Unrelated background.\n\nPolicy begins Monday."
+        )
+
+        selected = select_citable_passages([source], passages, "When does policy begin?")
+
+        self.assertEqual(selected[0].text, "Policy begins Monday.")
+        self.assertEqual(selected[1].text, "Unrelated background.")

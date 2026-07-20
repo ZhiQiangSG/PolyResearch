@@ -68,7 +68,7 @@ class BailianWebSearchProvider:
     name = "bailian_web_search"
 
     async def search(self, request: SearchRequest, config: RunnableConfig) -> str:
-        from polyresearch.utils import load_bailian_web_search_tool
+        from polyresearch.utils import load_bailian_web_search_tool, select_citable_passages
 
         tools = await load_bailian_web_search_tool(config, existing_tool_names=set())
         if len(tools) != 1:
@@ -90,7 +90,14 @@ class BailianWebSearchProvider:
             {
                 "type": "polyresearch_evidence",
                 "sources": [source.model_dump(mode="json") for source in sources],
-                "passages": [passage.model_dump(mode="json") for passage in passages],
+                "passages": [
+                    passage.model_dump(mode="json")
+                    for passage in select_citable_passages(sources, passages, request.query)
+                ],
+                "selection": {
+                    "method": "deterministic_query_passage_ranking_v1",
+                    "supplemental_summaries": [],
+                },
             },
             ensure_ascii=False,
         )

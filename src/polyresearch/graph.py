@@ -70,6 +70,7 @@ from polyresearch.utils import (
     get_model_token_limit,
     get_today_str,
     is_token_limit_exceeded,
+    select_citable_passages,
     think_tool,
 )
 from polyresearch.source_ingestion import languages_match
@@ -621,7 +622,10 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
     """
     # Step 1: Load citable source passages from the durable evidence ledger.
     context, sources, passages, _, _, _ = await _load_evidence_ledger(config)
-    if not passages:
+    selected_passages = select_citable_passages(
+        sources, passages, state.get("research_topic", "")
+    )
+    if not selected_passages:
         return {
             "sources": sources,
             "passages": passages,
@@ -648,7 +652,7 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
     evidence_ledger = json.dumps(
         {
             "sources": _serialize_artifacts(sources, SourceRecord),
-            "passages": _serialize_artifacts(passages, EvidencePassage),
+            "passages": _serialize_artifacts(selected_passages, EvidencePassage),
         },
         ensure_ascii=False,
     )
@@ -673,7 +677,7 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
             "verification_results": [],
         }
 
-    known_passage_ids = {passage.id for passage in passages}
+    known_passage_ids = {passage.id for passage in selected_passages}
     claims = [
         claim
         for claim in response.claims
