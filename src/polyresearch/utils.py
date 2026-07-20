@@ -42,6 +42,7 @@ from polyresearch.models import (
     SourceVersion,
 )
 from polyresearch.repositories import RunContext
+from polyresearch.deduplication import deduplicate_source_artifacts
 from polyresearch.source_ingestion import (
     extract_document,
     fetch_source_content,
@@ -227,6 +228,9 @@ async def tavily_search(
             )
         )
 
+    sources, source_versions, passages = await _deduplicate_source_artifacts(
+        config, sources, source_versions, passages
+    )
     if not sources:
         return "No valid search results found. Please try different search queries or use a different search API."
 
@@ -298,6 +302,32 @@ def _chunk_evidence_passages(
             )
         )
     return passages
+
+
+async def _deduplicate_source_artifacts(
+    config: RunnableConfig | None,
+    sources: list[SourceRecord],
+    versions: list[SourceVersion],
+    passages: list[EvidencePassage],
+) -> tuple[list[SourceRecord], list[SourceVersion], list[EvidencePassage]]:
+    """Apply run-scoped canonical, hash, near-copy, and origin clustering."""
+    if not config:
+        return deduplicate_source_artifacts(sources, versions, passages)
+    try:
+        context = RunContext.from_runnable_config(config)
+    except ValueError:
+        return deduplicate_source_artifacts(sources, versions, passages)
+    existing_sources, existing_versions = await asyncio.gather(
+        context.repository.list_sources(context.run_id),
+        context.repository.list_source_versions(context.run_id),
+    )
+    return deduplicate_source_artifacts(
+        sources,
+        versions,
+        passages,
+        existing_sources=existing_sources,
+        existing_versions=existing_versions,
+    )
 
 
 async def _persist_tavily_ingestion(

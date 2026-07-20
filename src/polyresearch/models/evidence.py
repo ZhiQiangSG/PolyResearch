@@ -47,6 +47,9 @@ class SourceRecord(BaseModel):
     updated_at: datetime | None = None
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     content_hash: str | None = None
+    publisher_family: str | None = None
+    shared_origin_cluster_id: str | None = None
+    near_duplicate_cluster_id: str | None = None
     extraction_quality: float | None = Field(default=None, ge=0, le=1)
     extraction_notes: list[str] = Field(default_factory=list)
     document_structure: list[DocumentSection] = Field(default_factory=list)

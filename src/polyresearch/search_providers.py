@@ -174,7 +174,12 @@ async def _persist_bailian_ingestion(
     )
 
     # Reuse the same URL and passage semantics as the direct Tavily path.
-    from polyresearch.utils import _chunk_evidence_passages, _redirect_chain, canonicalize_url
+    from polyresearch.utils import (
+        _chunk_evidence_passages,
+        _deduplicate_source_artifacts,
+        _redirect_chain,
+        canonicalize_url,
+    )
     from polyresearch.source_ingestion import extract_document, languages_match
 
     sources: list[SourceRecord] = []
@@ -272,6 +277,9 @@ async def _persist_bailian_ingestion(
             )
         )
 
+    sources, source_versions, passages = await _deduplicate_source_artifacts(
+        config, sources, source_versions, passages
+    )
     if not query_records:
         query_records = [
             QueryRecord(
