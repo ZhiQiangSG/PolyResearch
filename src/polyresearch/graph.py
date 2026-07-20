@@ -8,7 +8,6 @@ from langchain_core.messages import (
     MessageLikeRepresentation,
     SystemMessage,
     ToolMessage,
-    filter_messages,
     get_buffer_string,
 )
 from langchain_core.runnables import RunnableConfig
@@ -34,6 +33,7 @@ from polyresearch.models import (
     ResearchComplete,
     Claim,
     ClaimExtractionResult,
+    EvidenceLink,
     EvidencePassage,
     ProvenanceAttachment,
     ResearcherOutputState,
@@ -475,31 +475,18 @@ async def _persist_non_tavily_tool_outputs(
         )
 
 
-def _evidence_from_tool_messages(
-    messages: list[MessageLikeRepresentation],
-) -> tuple[list[SourceRecord], list[EvidencePassage]]:
-    """Recover typed Tavily evidence records from tool-message payloads."""
-    sources: dict[str, SourceRecord] = {}
-    passages: dict[str, EvidencePassage] = {}
-    for message in filter_messages(messages, include_types="tool"):
-        if not isinstance(message.content, str):
-            continue
-        try:
-            payload = json.loads(message.content)
-        except json.JSONDecodeError:
-            continue
-        if payload.get("type") != "polyresearch_evidence":
-            continue
-        try:
-            for source_data in payload.get("sources", []):
-                source = SourceRecord.model_validate(source_data)
-                sources[str(source.id)] = source
-            for passage_data in payload.get("passages", []):
-                passage = EvidencePassage.model_validate(passage_data)
-                passages[str(passage.id)] = passage
-        except (TypeError, ValueError):
-            continue
-    return list(sources.values()), list(passages.values())
+async def _load_evidence_ledger(config: RunnableConfig):
+    """Load typed evidence artifacts from the durable run ledger."""
+    context = RunContext.from_runnable_config(config)
+    repository = context.repository
+    sources, passages, claims, evidence_links, verification_results = await asyncio.gather(
+        repository.list_sources(context.run_id),
+        repository.list_passages(context.run_id),
+        repository.list_claims(context.run_id),
+        repository.list_evidence_links(context.run_id),
+        repository.list_verification_results(context.run_id),
+    )
+    return context, sources, passages, claims, evidence_links, verification_results
 
 
 def _researcher_evidence_summary(observation: dict) -> str:
@@ -614,9 +601,8 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
     Returns:
         Typed source, passage, claim, and verification-result collections
     """
-    # Step 1: Recover the original source passages captured by search tools.
-    researcher_messages = state.get("researcher_messages", [])
-    sources, passages = _evidence_from_tool_messages(researcher_messages)
+    # Step 1: Load citable source passages from the durable evidence ledger.
+    context, sources, passages, _, _, _ = await _load_evidence_ledger(config)
     if not passages:
         return {
             "sources": sources,
@@ -675,6 +661,17 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
         for claim in response.claims
         if set(claim.evidence_passage_ids).issubset(known_passage_ids)
     ]
+    evidence_links = [
+        EvidenceLink(
+            claim_id=claim.id,
+            passage_id=passage_id,
+            relationship="supports",
+        )
+        for claim in claims
+        for passage_id in claim.evidence_passage_ids
+    ]
+    await context.repository.append_claims(context.run_id, claims)
+    await context.repository.append_evidence_links(context.run_id, evidence_links)
     return {
         "sources": sources,
         "passages": passages,
@@ -715,14 +712,17 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
     Returns:
         Dictionary containing the final report and cleared state
     """
-    # Step 1: Extract research findings and prepare state cleanup
+    # Step 1: Load report inputs from the durable typed evidence ledger.
+    _, sources, passages, claims, _, verification_results = await _load_evidence_ledger(
+        config
+    )
     findings = json.dumps(
         {
-            "sources": _serialize_artifacts(state.get("sources", []), SourceRecord),
-            "passages": _serialize_artifacts(state.get("passages", []), EvidencePassage),
-            "claims": _serialize_artifacts(state.get("claims", []), Claim),
+            "sources": _serialize_artifacts(sources, SourceRecord),
+            "passages": _serialize_artifacts(passages, EvidencePassage),
+            "claims": _serialize_artifacts(claims, Claim),
             "verification_results": _serialize_artifacts(
-                state.get("verification_results", []), VerificationResult
+                verification_results, VerificationResult
             ),
         },
         ensure_ascii=False,
