@@ -210,6 +210,9 @@ class Claim(BaseModel):
     scope: "ClaimScope | None" = None
     qualifiers: list[str] = Field(default_factory=list)
     modality: str | None = None
+    claim_cluster_id: UUID | None = None
+    claim_cluster_method: str | None = None
+    claim_cluster_confidence: float | None = Field(default=None, ge=0, le=1)
 
 
 class ClaimEntity(BaseModel):

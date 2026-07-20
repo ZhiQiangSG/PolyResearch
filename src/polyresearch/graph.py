@@ -72,6 +72,7 @@ from polyresearch.report_qa import validate_report_statements
 from polyresearch.repositories import RunContext
 from polyresearch.source_ingestion import languages_match
 from polyresearch.entity_resolution import resolve_claim_entities
+from polyresearch.claim_clustering import cluster_claims
 from polyresearch.value_normalization import normalize_claim_values
 from polyresearch.utils import (
     create_qwen_chat_model,
@@ -712,7 +713,7 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
         for draft in response.claims
         if set(draft.evidence_passage_ids).issubset(known_passage_ids)
     ]
-    claims = resolve_claim_entities(normalize_claim_values(claims))
+    claims = cluster_claims(resolve_claim_entities(normalize_claim_values(claims)))
     evidence_links = [
         EvidenceLink(
             claim_id=claim.id,
