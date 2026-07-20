@@ -285,6 +285,16 @@ class SqliteEvidenceRepository(EvidenceRepository):
         with self._transaction():
             for translation in translations:
                 self._ensure_artifact("passages", run_id, translation.passage_id)
+                if translation.source_original_text_hash is not None:
+                    row = self._connection.execute(
+                        "SELECT payload FROM passages WHERE id = ? AND run_id = ?",
+                        (str(translation.passage_id), str(run_id)),
+                    ).fetchone()
+                    passage = EvidencePassage.model_validate_json(row["payload"])
+                    if translation.source_original_text_hash != passage.original_text_hash:
+                        raise ArtifactConflictError(
+                            "Translation source hash does not match its immutable original passage"
+                        )
             self._append("translations", run_id, translations)
 
     async def append_claims(self, run_id: UUID, claims: Sequence[Claim]) -> None:

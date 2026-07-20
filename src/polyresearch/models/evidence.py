@@ -72,15 +72,32 @@ class SourceVersion(BaseModel):
 class EvidencePassage(BaseModel):
     """Exact original-language text that may be cited by a claim."""
 
+    model_config = ConfigDict(frozen=True)
+
     id: UUID = Field(default_factory=uuid4)
     source_id: UUID
     text: str = Field(min_length=1)
+    original_text_hash: str
     locator: str
     heading: str | None = None
     page_number: int | None = Field(default=None, ge=1)
     character_start: int | None = Field(default=None, ge=0)
     character_end: int | None = Field(default=None, ge=0)
     original_language: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def add_original_text_hash(cls, values: Any) -> Any:
+        """Bind a passage ID to its exact pre-summary, pre-translation text."""
+        if not isinstance(values, dict) or "original_text_hash" in values:
+            return values
+        import hashlib
+
+        payload = dict(values)
+        payload["original_text_hash"] = hashlib.sha256(
+            str(payload.get("text", "")).encode("utf-8")
+        ).hexdigest()
+        return payload
 
     @model_validator(mode="after")
     def validate_character_range(self) -> "EvidencePassage":
@@ -95,10 +112,13 @@ class EvidencePassage(BaseModel):
 class TranslationRecord(BaseModel):
     """A labeled translation derived from an original evidence passage."""
 
+    model_config = ConfigDict(frozen=True)
+
     id: UUID = Field(default_factory=uuid4)
     passage_id: UUID
     translated_text: str = Field(min_length=1)
     target_language: str = Field(min_length=1)
+    source_original_text_hash: str | None = None
     model_id: str | None = None
     prompt_version: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)

@@ -127,6 +127,7 @@ class SqliteEvidenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     passage_id=passage.id,
                     translated_text="La política cambió el 1 de enero.",
                     target_language="es",
+                    source_original_text_hash=passage.original_text_hash,
                     confidence=0.95,
                 )
                 claim = Claim(

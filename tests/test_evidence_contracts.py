@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
-from polyresearch.models import Claim, EvidencePassage, SourceRecord
+from polyresearch.models import Claim, EvidencePassage, SourceRecord, TranslationRecord
 from polyresearch.models.graph_state import merge_evidence_by_id, override_reducer
 from polyresearch.repositories import SqliteEvidenceRepository
 
@@ -37,6 +37,26 @@ class EvidenceContractTests(unittest.TestCase):
         self.assertIsInstance(source.id, UUID)
         self.assertEqual(restored.id, source.id)
         self.assertEqual(restored, source)
+
+    def test_original_passages_are_immutable_and_translations_reference_their_hash(self) -> None:
+        source = SourceRecord(canonical_url="https://example.test", title="Example")
+        passage = EvidencePassage(
+            source_id=source.id,
+            text="原始证据。",
+            locator="paragraph-1",
+            original_language="zh",
+        )
+        translation = TranslationRecord(
+            passage_id=passage.id,
+            translated_text="Original evidence.",
+            target_language="en",
+            source_original_text_hash=passage.original_text_hash,
+        )
+
+        self.assertEqual(len(passage.original_text_hash), 64)
+        self.assertEqual(translation.source_original_text_hash, passage.original_text_hash)
+        with self.assertRaises(ValidationError):
+            passage.text = "Altered evidence."
 
     def test_evidence_reducer_deduplicates_ids_and_override_reducer_replaces(self) -> None:
         source = SourceRecord(canonical_url="https://example.test", title="Example")
