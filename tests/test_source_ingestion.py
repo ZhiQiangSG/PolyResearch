@@ -14,6 +14,7 @@ class SourceIngestionTests(unittest.TestCase):
               <meta property="og:site_name" content="Policy Office" />
               <meta name="author" content="Research Unit" />
               <meta property="article:published_time" content="2026-07-20T10:00:00Z" />
+              <meta property="article:modified_time" content="2026-07-20T12:00:00Z" />
             </head><body>
               <h1>政策更新</h1><p>第一段原文。</p><p>第二段原文。</p>
               <script>ignore this content</script>
@@ -30,10 +31,17 @@ class SourceIngestionTests(unittest.TestCase):
         self.assertEqual(document.metadata_language, "zh-cn")
         self.assertEqual(document.language_detection_method, "metadata_and_content")
         self.assertEqual(document.canonical_url, "/official-policy")
+        self.assertEqual(document.published_at.isoformat(), "2026-07-20T10:00:00+00:00")
+        self.assertEqual(document.updated_at.isoformat(), "2026-07-20T12:00:00+00:00")
         self.assertEqual(document.passages, [
             ("政策更新 / paragraph-1", "第一段原文。"),
             ("政策更新 / paragraph-2", "第二段原文。"),
         ])
+        self.assertEqual(document.document_structure, [{
+            "heading": "政策更新",
+            "first_passage_locator": "政策更新 / paragraph-1",
+            "last_passage_locator": "政策更新 / paragraph-2",
+        }])
         self.assertGreater(document.extraction_quality, 0.8)
 
     def test_language_detection_uses_metadata_then_script_evidence(self) -> None:

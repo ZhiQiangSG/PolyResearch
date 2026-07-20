@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
+from urllib.parse import urljoin
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import ToolException, tool
@@ -221,8 +222,16 @@ async def _persist_bailian_ingestion(
             content_type=row.get("content_type") or row.get("mime_type"),
         )
         content_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
+        source_canonical_url = canonical_url
+        if document.canonical_url:
+            try:
+                source_canonical_url = canonicalize_url(
+                    urljoin(discovered_url, document.canonical_url)
+                )
+            except ValueError:
+                pass
         source = SourceRecord(
-            canonical_url=canonical_url,
+            canonical_url=source_canonical_url,
             discovered_url=discovered_url,
             redirect_chain=_redirect_chain(row, discovered_url),
             title=row.get("title") or document.title or canonical_url,
@@ -238,6 +247,7 @@ async def _persist_bailian_ingestion(
             content_hash=content_hash,
             extraction_quality=document.extraction_quality,
             extraction_notes=document.extraction_notes,
+            document_structure=document.document_structure,
             research_unit_id=context.research_unit_id,
         )
         sources.append(source)

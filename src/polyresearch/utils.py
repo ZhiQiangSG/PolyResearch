@@ -10,6 +10,7 @@ import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urljoin
 
 import aiohttp
 from langchain.chat_models import init_chat_model
@@ -178,8 +179,18 @@ async def tavily_search(
             extraction_method = document.extraction_method
 
         content_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
+        source_canonical_url = result["canonical_url"]
+        if document.canonical_url:
+            try:
+                source_canonical_url = canonicalize_url(
+                    urljoin(result["discovered_url"], document.canonical_url)
+                )
+            except ValueError:
+                logging.getLogger(__name__).info(
+                    "Ignoring invalid extracted canonical URL for %s", result["discovered_url"]
+                )
         source = SourceRecord(
-            canonical_url=result["canonical_url"],
+            canonical_url=source_canonical_url,
             title=result.get("title") or document.title or result["canonical_url"],
             publisher=result.get("publisher") or document.publisher,
             author=result.get("author") or document.author,
@@ -194,6 +205,7 @@ async def tavily_search(
             content_hash=content_hash,
             extraction_quality=document.extraction_quality,
             extraction_notes=document.extraction_notes,
+            document_structure=document.document_structure,
             research_unit_id=_research_unit_id_from_config(config),
             discovered_url=result["discovered_url"],
             redirect_chain=result["redirect_chain"],

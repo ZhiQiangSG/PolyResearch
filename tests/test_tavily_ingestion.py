@@ -398,6 +398,50 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                 repository.close()
                 utils.tavily_search_async = original_search
 
+    async def test_search_persists_extracted_metadata_and_structure(self) -> None:
+        async def fake_search(*args, **kwargs):
+            return [{
+                "query": "official policy",
+                "results": [{
+                    "url": "https://example.test/discovered?utm_source=newsletter",
+                    "raw_content": """
+                        <html lang=\"en\"><head>
+                        <link rel=\"canonical\" href=\"/official-policy\" />
+                        <meta property=\"og:title\" content=\"Official policy\" />
+                        <meta property=\"og:site_name\" content=\"Policy Office\" />
+                        <meta name=\"author\" content=\"Policy Team\" />
+                        <meta property=\"article:published_time\" content=\"2026-01-02T03:04:05Z\" />
+                        <meta property=\"article:modified_time\" content=\"2026-01-03T03:04:05Z\" />
+                        </head><body><h1>Policy</h1><p>Original evidence.</p></body></html>
+                    """,
+                    "content_type": "text/html",
+                }],
+            }]
+
+        original_search = utils.tavily_search_async
+        utils.tavily_search_async = fake_search
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
+            try:
+                await repository.create_run(run)
+                await utils.tavily_search.coroutine(
+                    ["official policy"],
+                    config={"configurable": {"run_id": str(run.id), "evidence_repository": repository}},
+                )
+                source = (await repository.list_sources(run.id))[0]
+                self.assertEqual(source.canonical_url, "https://example.test/official-policy")
+                self.assertEqual(source.title, "Official policy")
+                self.assertEqual(source.publisher, "Policy Office")
+                self.assertEqual(source.author, "Policy Team")
+                self.assertEqual(source.published_at.isoformat(), "2026-01-02T03:04:05+00:00")
+                self.assertEqual(source.updated_at.isoformat(), "2026-01-03T03:04:05+00:00")
+                self.assertEqual(source.document_structure[0].heading, "Policy")
+                self.assertEqual(source.document_structure[0].first_passage_locator, "Policy / paragraph-1")
+            finally:
+                repository.close()
+                utils.tavily_search_async = original_search
+
     async def test_non_tavily_tool_output_is_kept_as_an_audit_attachment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")

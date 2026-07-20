@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urljoin
 
@@ -93,6 +94,7 @@ class ExtractedDocument:
     published_at: datetime | None = None
     updated_at: datetime | None = None
     passages: list[tuple[str, str]] = field(default_factory=list)
+    document_structure: list[dict[str, Any]] = field(default_factory=list)
     http_metadata: dict[str, Any] = field(default_factory=dict)
     extraction_method: str = "provider_content"
     extraction_quality: float = 0.0
@@ -105,7 +107,10 @@ def _parse_datetime(value: str | None) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return None
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
     return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc)
 
 
@@ -154,6 +159,15 @@ def extract_document(content: str, *, content_type: str | None = None) -> Extrac
             raw_content=content,
             content=content,
             passages=passages,
+            document_structure=(
+                [{
+                    "heading": "document",
+                    "first_passage_locator": passages[0][0],
+                    "last_passage_locator": passages[-1][0],
+                }]
+                if passages
+                else []
+            ),
             language=content_language,
             content_language=content_language,
             language_detection_method="content_script",
@@ -164,6 +178,18 @@ def extract_document(content: str, *, content_type: str | None = None) -> Extrac
     parser = _DocumentParser()
     parser.feed(content)
     passages = [(f"{heading} / paragraph-{index}", text) for index, (heading, text) in enumerate(parser.blocks, 1)]
+    document_structure: list[dict[str, Any]] = []
+    for locator, (heading, _) in zip((locator for locator, _ in passages), parser.blocks):
+        if document_structure and document_structure[-1]["heading"] == heading:
+            document_structure[-1]["last_passage_locator"] = locator
+        else:
+            document_structure.append(
+                {
+                    "heading": heading,
+                    "first_passage_locator": locator,
+                    "last_passage_locator": locator,
+                }
+            )
     visible_text = "\n\n".join(text for _, text in parser.blocks)
     metadata = parser.metadata
     content_language = detect_content_language(visible_text or content)
@@ -184,9 +210,19 @@ def extract_document(content: str, *, content_type: str | None = None) -> Extrac
         metadata_language=metadata_language,
         language_detection_method=("metadata_and_content" if metadata_language and content_language else "metadata" if metadata_language else "content_script" if content_language else None),
         canonical_url=parser.canonical_url,
-        published_at=_parse_datetime(metadata.get("article:published_time") or metadata.get("date")),
-        updated_at=_parse_datetime(metadata.get("article:modified_time") or metadata.get("last-modified")),
+        published_at=_parse_datetime(
+            metadata.get("article:published_time")
+            or metadata.get("datepublished")
+            or metadata.get("publishdate")
+            or metadata.get("date")
+        ),
+        updated_at=_parse_datetime(
+            metadata.get("article:modified_time")
+            or metadata.get("datemodified")
+            or metadata.get("last-modified")
+        ),
         passages=passages,
+        document_structure=document_structure,
         extraction_quality=quality,
         extraction_notes=language_notes,
     )

@@ -19,6 +19,15 @@ class VerificationStatus(StrEnum):
     NOT_COMPARABLE = "not_comparable"
 
 
+class DocumentSection(BaseModel):
+    """A stable structural region of a fetched source document."""
+
+    heading: str
+    first_passage_locator: str
+    last_passage_locator: str
+    heading_level: int | None = Field(default=None, ge=1, le=6)
+
+
 class SourceRecord(BaseModel):
     """A retrieved source with immutable discovery and retrieval provenance."""
 
@@ -40,6 +49,7 @@ class SourceRecord(BaseModel):
     content_hash: str | None = None
     extraction_quality: float | None = Field(default=None, ge=0, le=1)
     extraction_notes: list[str] = Field(default_factory=list)
+    document_structure: list[DocumentSection] = Field(default_factory=list)
     research_unit_id: UUID | None = None
     discovered_url: str | None = None
     redirect_chain: list[str] = Field(default_factory=list)

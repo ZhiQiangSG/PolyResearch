@@ -11,6 +11,7 @@ from polyresearch.models.graph_state import (
 from polyresearch.models.evidence import (
     Claim,
     ClaimExtractionResult,
+    DocumentSection,
     EvidenceLink,
     EvidencePassage,
     ProvenanceAttachment,
@@ -53,6 +54,7 @@ __all__ = [
     "ClaimExtractionResult",
     "ClarifyWithUser",
     "ConductResearch",
+    "DocumentSection",
     "EvidenceLink",
     "EvidenceGap",
     "EvidencePassage",
