@@ -41,7 +41,11 @@ from polyresearch.models import (
     SourceVersion,
 )
 from polyresearch.repositories import RunContext
-from polyresearch.source_ingestion import extract_document, fetch_source_content
+from polyresearch.source_ingestion import (
+    extract_document,
+    fetch_source_content,
+    languages_match,
+)
 
 # --- Tavily Search Tool Utils ---
 
@@ -180,7 +184,11 @@ async def tavily_search(
             publisher=result.get("publisher") or document.publisher,
             author=result.get("author") or document.author,
             language=document.language or query_language,
+            content_language=document.content_language,
+            metadata_language=document.metadata_language,
+            language_detection_method=document.language_detection_method,
             planned_query_language=query_language,
+            language_matches_planned_query=languages_match(document.language, query_language),
             published_at=document.published_at,
             updated_at=document.updated_at,
             content_hash=content_hash,

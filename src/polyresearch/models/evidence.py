@@ -28,7 +28,11 @@ class SourceRecord(BaseModel):
     publisher: str | None = None
     author: str | None = None
     language: str | None = None
+    content_language: str | None = None
+    metadata_language: str | None = None
+    language_detection_method: str | None = None
     planned_query_language: str | None = None
+    language_matches_planned_query: bool | None = None
     source_type: str = "web"
     published_at: datetime | None = None
     updated_at: datetime | None = None

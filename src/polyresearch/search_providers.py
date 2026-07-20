@@ -174,7 +174,7 @@ async def _persist_bailian_ingestion(
 
     # Reuse the same URL and passage semantics as the direct Tavily path.
     from polyresearch.utils import _chunk_evidence_passages, _redirect_chain, canonicalize_url
-    from polyresearch.source_ingestion import extract_document
+    from polyresearch.source_ingestion import extract_document, languages_match
 
     sources: list[SourceRecord] = []
     source_versions: list[SourceVersion] = []
@@ -229,7 +229,11 @@ async def _persist_bailian_ingestion(
             publisher=row.get("publisher") or document.publisher,
             author=row.get("author") or document.author,
             language=document.language or request.language,
+            content_language=document.content_language,
+            metadata_language=document.metadata_language,
+            language_detection_method=document.language_detection_method,
             planned_query_language=request.language,
+            language_matches_planned_query=languages_match(document.language, request.language),
             source_type=request.target_source_type,
             content_hash=content_hash,
             extraction_quality=document.extraction_quality,

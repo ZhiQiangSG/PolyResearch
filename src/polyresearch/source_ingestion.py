@@ -86,6 +86,9 @@ class ExtractedDocument:
     publisher: str | None = None
     author: str | None = None
     language: str | None = None
+    content_language: str | None = None
+    metadata_language: str | None = None
+    language_detection_method: str | None = None
     canonical_url: str | None = None
     published_at: datetime | None = None
     updated_at: datetime | None = None
@@ -106,10 +109,12 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc)
 
 
-def detect_language(content: str, metadata_language: str | None = None) -> str | None:
-    """Use declared language first, then conservative script detection."""
-    if metadata_language:
-        return metadata_language.replace("_", "-").casefold()
+def _normalize_language(language: str | None) -> str | None:
+    return language.replace("_", "-").casefold() if language else None
+
+
+def detect_content_language(content: str) -> str | None:
+    """Conservatively infer language from the source's visible original text."""
     letters = [char for char in content if char.isalpha()]
     if not letters:
         return None
@@ -124,19 +129,49 @@ def detect_language(content: str, metadata_language: str | None = None) -> str |
     return "en"
 
 
+def detect_language(content: str, metadata_language: str | None = None) -> str | None:
+    """Use declared metadata when present, retaining content detection separately."""
+    return _normalize_language(metadata_language) or detect_content_language(content)
+
+
+def languages_match(detected_language: str | None, planned_language: str | None) -> bool | None:
+    """Compare BCP-47-like tags without treating regional variants as mismatches."""
+    if not detected_language or not planned_language:
+        return None
+    return _normalize_language(detected_language).split("-", 1)[0] == _normalize_language(
+        planned_language
+    ).split("-", 1)[0]
+
+
 def extract_document(content: str, *, content_type: str | None = None) -> ExtractedDocument:
     """Extract stable original-text passages and metadata from supplied content."""
     is_html = "html" in (content_type or "").casefold() or bool(re.search(r"<html\b|<body\b", content, re.I))
     if not is_html:
         passages = [(f"paragraph-{index}", paragraph.strip()) for index, paragraph in enumerate(re.split(r"\n\s*\n", content), 1) if paragraph.strip()]
         quality = 0.7 if passages else 0.0
-        return ExtractedDocument(raw_content=content, content=content, passages=passages, language=detect_language(content), extraction_quality=quality, extraction_notes=["plain_text"])
+        content_language = detect_content_language(content)
+        return ExtractedDocument(
+            raw_content=content,
+            content=content,
+            passages=passages,
+            language=content_language,
+            content_language=content_language,
+            language_detection_method="content_script",
+            extraction_quality=quality,
+            extraction_notes=["plain_text"],
+        )
 
     parser = _DocumentParser()
     parser.feed(content)
     passages = [(f"{heading} / paragraph-{index}", text) for index, (heading, text) in enumerate(parser.blocks, 1)]
     visible_text = "\n\n".join(text for _, text in parser.blocks)
     metadata = parser.metadata
+    content_language = detect_content_language(visible_text or content)
+    metadata_language = _normalize_language(parser.language)
+    detected_language = metadata_language or content_language
+    language_notes = ["html", "visible_text" if passages else "no_semantic_blocks"]
+    if metadata_language and content_language and not languages_match(metadata_language, content_language):
+        language_notes.append("metadata_language_conflicts_with_content")
     quality = min(1.0, 0.25 + (0.45 if passages else 0) + (0.15 if parser.title else 0) + (0.15 if parser.language else 0))
     return ExtractedDocument(
         raw_content=content,
@@ -144,13 +179,16 @@ def extract_document(content: str, *, content_type: str | None = None) -> Extrac
         title=metadata.get("og:title") or parser.title or None,
         publisher=metadata.get("og:site_name") or metadata.get("publisher") or None,
         author=metadata.get("author") or metadata.get("article:author") or None,
-        language=detect_language(visible_text or content, parser.language),
+        language=detected_language,
+        content_language=content_language,
+        metadata_language=metadata_language,
+        language_detection_method=("metadata_and_content" if metadata_language and content_language else "metadata" if metadata_language else "content_script" if content_language else None),
         canonical_url=parser.canonical_url,
         published_at=_parse_datetime(metadata.get("article:published_time") or metadata.get("date")),
         updated_at=_parse_datetime(metadata.get("article:modified_time") or metadata.get("last-modified")),
         passages=passages,
         extraction_quality=quality,
-        extraction_notes=["html", "visible_text" if passages else "no_semantic_blocks"],
+        extraction_notes=language_notes,
     )
 
 

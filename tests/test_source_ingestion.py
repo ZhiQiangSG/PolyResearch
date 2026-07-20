@@ -1,6 +1,6 @@
 import unittest
 
-from polyresearch.source_ingestion import detect_language, extract_document
+from polyresearch.source_ingestion import detect_language, extract_document, languages_match
 
 
 class SourceIngestionTests(unittest.TestCase):
@@ -26,6 +26,9 @@ class SourceIngestionTests(unittest.TestCase):
         self.assertEqual(document.publisher, "Policy Office")
         self.assertEqual(document.author, "Research Unit")
         self.assertEqual(document.language, "zh-cn")
+        self.assertEqual(document.content_language, "zh")
+        self.assertEqual(document.metadata_language, "zh-cn")
+        self.assertEqual(document.language_detection_method, "metadata_and_content")
         self.assertEqual(document.canonical_url, "/official-policy")
         self.assertEqual(document.passages, [
             ("政策更新 / paragraph-1", "第一段原文。"),
@@ -37,4 +40,6 @@ class SourceIngestionTests(unittest.TestCase):
         self.assertEqual(detect_language("English text", "fr-FR"), "fr-fr")
         self.assertEqual(detect_language("这是中文证据。"), "zh")
         self.assertEqual(detect_language("", None), None)
-
+        self.assertTrue(languages_match("zh-cn", "zh"))
+        self.assertFalse(languages_match("en", "zh-CN"))
+        self.assertIsNone(languages_match(None, "zh"))
