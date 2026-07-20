@@ -40,7 +40,10 @@ class ProvenanceGraphTests(unittest.IsolatedAsyncioTestCase):
                 run_id=run.id, rendered_text="Policy changed.", claim_ids=[claim.id],
                 citation_ids=[passage.id], verification_status=VerificationStatus.SUPPORTED,
             )
-            query = QueryRecord(run_id=run.id, query="policy", language="en", provider="tavily")
+            query = QueryRecord(
+                run_id=run.id, query="policy", language="en", provider="tavily",
+                result_url=source.canonical_url,
+            )
             try:
                 await repository.create_run(run)
                 await repository.append_query_records(run.id, [query])
@@ -63,5 +66,15 @@ class ProvenanceGraphTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
                 self.assertEqual(len({node.node_id for node in graph.nodes}), len(graph.nodes))
+                self.assertEqual(
+                    {edge.kind for edge in graph.edges},
+                    {
+                        "FOUND_BY", "CONTAINS", "TRANSLATED_AS", "ASSERTS", "SUPPORTS",
+                        "VERIFIED_BY", "RENDERED_AS",
+                    },
+                )
+                found_by = next(edge for edge in graph.edges if edge.kind == "FOUND_BY")
+                self.assertEqual(found_by.from_node_id, f"query:{query.id}")
+                self.assertEqual(found_by.to_node_id, f"source:{source.id}")
             finally:
                 repository.close()

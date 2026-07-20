@@ -53,7 +53,11 @@ from polyresearch.models.research_run import (
     ResearchRun,
     TerminologyRecord,
 )
-from polyresearch.models.provenance_graph import ProvenanceGraph, ProvenanceGraphNode
+from polyresearch.models.provenance_graph import (
+    ProvenanceGraph,
+    ProvenanceGraphEdge,
+    ProvenanceGraphNode,
+)
 
 __all__ = [
     "AgentInputState",
@@ -75,6 +79,7 @@ __all__ = [
     "EvidencePassage",
     "ProvenanceAttachment",
     "ProvenanceGraph",
+    "ProvenanceGraphEdge",
     "ProvenanceGraphNode",
     "QueryRecord",
     "LanguageSelectionAssessment",
