@@ -90,6 +90,7 @@ Return only data matching the requested structured schema. Select research langu
 
 Requirements:
 - Split the work into atomic, answerable subquestions.
+- Populate `terminology` for legally, politically, culturally, or technically material terms. Preserve original term and language alongside a normalized term and any translation. Mark every translation as `exact`, `approximate`, or `not_translated`; for `approximate`, explain the non-equivalence in `translation_note` and never state or imply that it is exact.
 - Preserve each entity's canonical name, aliases, transliterations, and native-script variants; do not claim approximate translations are equivalent.
 - Rank only languages that are justified for this topic. Each ranked language needs a unique-value explanation, priority (1 is highest), and a positive query budget.
 - Order `ranked_languages` by ascending priority. Allocate the earliest, largest attention budget to the language with the highest expected information gain; later languages must state their incremental value over earlier coverage.

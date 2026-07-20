@@ -41,6 +41,7 @@ from polyresearch.models.research_run import (
     ResearchLanguage,
     ResearchPlan,
     ResearchRun,
+    TerminologyRecord,
 )
 
 __all__ = [
@@ -77,5 +78,6 @@ __all__ = [
     "VerificationResult",
     "VerificationStatus",
     "TranslationRecord",
+    "TerminologyRecord",
     "override_reducer",
 ]

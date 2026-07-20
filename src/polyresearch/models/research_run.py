@@ -28,6 +28,37 @@ class ResearchEntity(BaseModel):
     native_script_variants: list[str] = Field(default_factory=list)
 
 
+class TerminologyRecord(BaseModel):
+    """Original terminology and any explicitly qualified normalized translation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    original_term: str = Field(min_length=1)
+    original_language: str = Field(min_length=1)
+    normalized_term: str = Field(min_length=1)
+    translated_term: str | None = None
+    translation_equivalence: Literal["exact", "approximate", "not_translated"]
+    translation_note: str | None = None
+
+    @model_validator(mode="after")
+    def validate_translation_equivalence(self) -> "TerminologyRecord":
+        if self.translation_equivalence == "not_translated":
+            if self.translated_term is not None:
+                raise ValueError(
+                    "translated_term must be omitted when a term is not translated"
+                )
+            return self
+        if not self.translated_term:
+            raise ValueError(
+                "translated_term is required when translation equivalence is declared"
+            )
+        if self.translation_equivalence == "approximate" and not self.translation_note:
+            raise ValueError(
+                "translation_note is required for an approximate translation"
+            )
+        return self
+
+
 class AtomicSubquestion(BaseModel):
     """One independently answerable unit of a research plan."""
 
@@ -117,6 +148,7 @@ class ResearchPlan(BaseModel):
     run_id: UUID
     subquestions: list[AtomicSubquestion] = Field(min_length=1)
     entities: list[ResearchEntity] = Field(default_factory=list)
+    terminology: list[TerminologyRecord] = Field(default_factory=list)
     ranked_languages: list[ResearchLanguage] = Field(min_length=1)
     language_rationale: dict[str, str] = Field(default_factory=dict)
     query_variants: dict[str, list[str]] = Field(default_factory=dict)

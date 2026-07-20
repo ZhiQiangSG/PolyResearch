@@ -12,6 +12,7 @@ from polyresearch.models import (
     ResearchLanguage,
     ResearchPlan,
     ResearchRun,
+    TerminologyRecord,
 )
 from polyresearch.repositories import SqliteEvidenceRepository
 
@@ -72,6 +73,15 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             AtomicSubquestion(question="What changed?", answer_scope="Scope", extra="no")
 
+        with self.assertRaises(ValueError):
+            TerminologyRecord(
+                original_term="政策",
+                original_language="zh",
+                normalized_term="policy",
+                translated_term="policy",
+                translation_equivalence="approximate",
+            )
+
     async def test_planner_persists_plan_and_initializes_supervisor_with_it(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")
@@ -85,6 +95,16 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                     )
                 ],
                 entities=[ResearchEntity(canonical_name="Policy X", native_script_variants=["政策X"])],
+                terminology=[
+                    TerminologyRecord(
+                        original_term="政策X",
+                        original_language="zh",
+                        normalized_term="Policy X",
+                        translated_term="Policy X",
+                        translation_equivalence="approximate",
+                        translation_note="The Chinese term has a broader administrative scope.",
+                    )
+                ],
                 ranked_languages=[
                     ResearchLanguage(
                         language="zh",
@@ -119,6 +139,7 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("ResearchBrief", stub.messages[0].content)
                 self.assertIn("marginal information gain", stub.messages[0].content)
                 self.assertIn("do not use a fixed default language list", stub.messages[0].content)
+                self.assertIn("translation_note", stub.messages[0].content)
             finally:
                 graph_module.create_qwen_chat_model = original_factory
                 repository.close()
