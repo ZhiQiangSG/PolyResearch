@@ -31,6 +31,8 @@ class SourceRecord(BaseModel):
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     content_hash: str | None = None
     research_unit_id: UUID | None = None
+    discovered_url: str | None = None
+    redirect_chain: list[str] = Field(default_factory=list)
 
 
 class SourceVersion(BaseModel):
@@ -83,6 +85,7 @@ class QueryRecord(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
     result_rank: int | None = Field(default=None, ge=1)
+    result_url: str | None = None
     fallback_from: str | None = None
     failure: str | None = None
     executed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

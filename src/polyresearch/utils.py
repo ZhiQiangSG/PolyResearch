@@ -9,6 +9,7 @@ import re
 import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 from langchain.chat_models import init_chat_model
@@ -47,6 +48,45 @@ TAVILY_SEARCH_DESCRIPTION = (
     "A search engine optimized for comprehensive, accurate, and trusted results. "
     "Useful for when you need to answer questions about current events."
 )
+
+_TRACKING_QUERY_PARAMETERS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+
+
+def canonicalize_url(url: str) -> str:
+    """Normalize a discovery URL while removing only known tracking parameters."""
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"Unsupported discovery URL: {url}")
+    hostname = (parsed.hostname or "").lower()
+    netloc = hostname
+    if parsed.port and not (
+        (parsed.scheme.lower() == "http" and parsed.port == 80)
+        or (parsed.scheme.lower() == "https" and parsed.port == 443)
+    ):
+        netloc = f"{hostname}:{parsed.port}"
+    query = urlencode(
+        sorted(
+            (
+                (key, value)
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if not key.lower().startswith("utm_")
+                and key.lower() not in _TRACKING_QUERY_PARAMETERS
+            ),
+            key=lambda item: (item[0], item[1]),
+        ),
+        doseq=True,
+    )
+    return urlunsplit((parsed.scheme.lower(), netloc, parsed.path or "/", query, ""))
+
+
+def _redirect_chain(result: dict[str, Any], discovered_url: str) -> list[str]:
+    """Retain provider-supplied redirect metadata without treating it as evidence."""
+    chain = result.get("redirect_chain") or result.get("redirects") or []
+    if isinstance(chain, str):
+        chain = [chain]
+    return [str(url) for url in chain] or [discovered_url]
+
+
 @tool(description=TAVILY_SEARCH_DESCRIPTION)
 async def tavily_search(
     queries: list[str],
@@ -87,9 +127,19 @@ async def tavily_search(
     unique_results = {}
     for response in search_results:
         for result in response['results']:
-            url = result['url']
-            if url not in unique_results:
-                unique_results[url] = {**result, "query": response['query']}
+            discovered_url = result['url']
+            try:
+                canonical_url = canonicalize_url(discovered_url)
+            except ValueError:
+                continue
+            if canonical_url not in unique_results:
+                unique_results[canonical_url] = {
+                    **result,
+                    "query": response['query'],
+                    "discovered_url": discovered_url,
+                    "canonical_url": canonical_url,
+                    "redirect_chain": _redirect_chain(result, discovered_url),
+                }
     
     # Step 3: Persist original tool output and typed source/passages immediately.
     # The returned payload is for the researcher's typed evidence ledger; raw tool
@@ -104,10 +154,12 @@ async def tavily_search(
 
         content_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()
         source = SourceRecord(
-            canonical_url=result["url"],
-            title=result.get("title") or result["url"],
+            canonical_url=result["canonical_url"],
+            title=result.get("title") or result["canonical_url"],
             content_hash=content_hash,
             research_unit_id=_research_unit_id_from_config(config),
+            discovered_url=result["discovered_url"],
+            redirect_chain=result["redirect_chain"],
         )
         source_version = SourceVersion(
             source_id=source.id,
@@ -197,22 +249,33 @@ async def _persist_tavily_ingestion(
         return
 
     raw_output = json.dumps(search_results, ensure_ascii=False, sort_keys=True, default=str)
-    query_records = [
-        QueryRecord(
-            run_id=context.run_id,
-            research_unit_id=context.research_unit_id,
-            query=query,
-            language=query_language,
-            provider="tavily",
-            locale=locale,
-            target_source_type=target_source_type,
-            rationale=query_rationale,
-            date_from=start_date,
-            date_to=end_date,
-            fallback_from=fallback_from,
-        )
-        for query in queries
-    ]
+    query_records = []
+    for response in search_results:
+        for result_rank, result in enumerate(response.get("results", []), start=1):
+            discovered_url = result.get("url")
+            if not discovered_url:
+                continue
+            try:
+                canonical_url = canonicalize_url(discovered_url)
+            except ValueError:
+                continue
+            query_records.append(
+                QueryRecord(
+                    run_id=context.run_id,
+                    research_unit_id=context.research_unit_id,
+                    query=response.get("query") or queries[0],
+                    language=query_language,
+                    provider="tavily",
+                    locale=locale,
+                    target_source_type=target_source_type,
+                    rationale=query_rationale,
+                    date_from=start_date,
+                    date_to=end_date,
+                    fallback_from=fallback_from,
+                    result_rank=result_rank,
+                    result_url=canonical_url,
+                )
+            )
     await context.repository.append_query_records(context.run_id, query_records)
     await context.repository.append_provenance_attachments(
         context.run_id,

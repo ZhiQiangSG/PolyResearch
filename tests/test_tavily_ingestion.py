@@ -252,6 +252,64 @@ class TavilyIngestionTests(unittest.IsolatedAsyncioTestCase):
                 repository.close()
                 utils.tavily_search_async = original_search
 
+    async def test_search_canonicalizes_urls_preserves_redirects_and_deduplicates(self) -> None:
+        async def fake_search(*args, **kwargs):
+            return [
+                {
+                    "query": "policy update",
+                    "results": [
+                        {
+                            "url": "HTTPS://Example.TEST/policy?id=1&utm_source=newsletter#top",
+                            "title": "Policy update",
+                            "raw_content": "First copy.",
+                            "redirect_chain": [
+                                "http://example.test/policy?id=1",
+                                "https://example.test/policy?id=1",
+                            ],
+                        },
+                        {
+                            "url": "https://example.test/policy?id=1",
+                            "title": "Duplicate policy update",
+                            "raw_content": "Second copy should not be fetched.",
+                        },
+                    ],
+                }
+            ]
+
+        original_search = utils.tavily_search_async
+        utils.tavily_search_async = fake_search
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(id=uuid4(), question="What changed?", output_language="en")
+            try:
+                await repository.create_run(run)
+                await utils.tavily_search.coroutine(
+                    ["policy update"],
+                    config={
+                        "configurable": {
+                            "run_id": str(run.id),
+                            "evidence_repository": repository,
+                        }
+                    },
+                )
+                sources = await repository.list_sources(run.id)
+                records = await repository.list_query_records(run.id)
+                self.assertEqual(len(sources), 1)
+                self.assertEqual(sources[0].canonical_url, "https://example.test/policy?id=1")
+                self.assertEqual(
+                    sources[0].discovered_url,
+                    "HTTPS://Example.TEST/policy?id=1&utm_source=newsletter#top",
+                )
+                self.assertEqual(len(sources[0].redirect_chain), 2)
+                self.assertEqual([record.result_rank for record in records], [1, 2])
+                self.assertEqual(
+                    {record.result_url for record in records},
+                    {"https://example.test/policy?id=1"},
+                )
+            finally:
+                repository.close()
+                utils.tavily_search_async = original_search
+
     async def test_non_tavily_tool_output_is_kept_as_an_audit_attachment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = SqliteEvidenceRepository(Path(directory) / "research.db")
