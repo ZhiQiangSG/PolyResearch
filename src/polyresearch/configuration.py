@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field, field_validator
 
-DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_MODEL_ID_PATTERN = re.compile(r"qwen[a-z0-9._-]*", re.IGNORECASE)
 
 
@@ -43,8 +43,9 @@ class Configuration(BaseModel):
 
     # Research Configuration
     search_api: SearchAPI = Field(default=SearchAPI.TAVILY)
-    max_researcher_iterations: int = Field(default=6)
-    max_react_tool_calls: int = Field(default=10)
+    max_researcher_iterations: int = Field(default=3)
+    max_react_tool_calls: int = Field(default=5)
+
     # Model Configuration
     model_provider: ModelProvider = Field(default=ModelProvider.QWEN_OPENAI_COMPATIBLE)
     qwen_base_url: str = Field(default=DEFAULT_QWEN_BASE_URL)

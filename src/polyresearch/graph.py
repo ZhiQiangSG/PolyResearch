@@ -1,5 +1,5 @@
 import asyncio
-from typing import Literal
+from typing import Literal, cast
 
 from langchain_core.messages import (
     AIMessage,
@@ -10,6 +10,7 @@ from langchain_core.messages import (
     get_buffer_string,
 )
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
@@ -93,13 +94,16 @@ async def clarify_with_user(
         messages=get_buffer_string(messages), 
         date=get_today_str()
     )
-    response = await clarification_model.ainvoke([HumanMessage(content=prompt_content)])
+    response = cast(
+        ClarifyWithUser,
+        await clarification_model.ainvoke([HumanMessage(content=prompt_content)])
+    )
     
     # Step 4: Route based on clarification analysis
     if response.need_clarification:
         # End with clarifying question for user
         return Command(
-            goto=END, 
+            goto="__end__", 
             update={"messages": [AIMessage(content=response.question)]}
         )
     else:
@@ -145,7 +149,10 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
         messages=get_buffer_string(state.get("messages", [])),
         date=get_today_str()
     )
-    response = await research_model.ainvoke([HumanMessage(content=prompt_content)])
+    response = cast(
+        ResearchQuestion,
+        await research_model.ainvoke([HumanMessage(content=prompt_content)])
+    )
     
     # Step 3: Initialize supervisor with research brief and instructions
     supervisor_system_prompt = lead_researcher_prompt.format(
@@ -193,7 +200,7 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
     )
     
     # Available tools: research delegation, completion signaling, and strategic thinking
-    lead_researcher_tools = [ConductResearch, ResearchComplete, think_tool]
+    lead_researcher_tools = [tool(ConductResearch), tool(ResearchComplete), think_tool]
     
     # Configure model with tools, retry logic, and model settings
     research_model = (
@@ -234,7 +241,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     configurable = Configuration.from_runnable_config(config)
     supervisor_messages = state.get("supervisor_messages", [])
     research_iterations = state.get("research_iterations", 0)
-    most_recent_message = supervisor_messages[-1]
+    most_recent_message = cast(AIMessage, supervisor_messages[-1])
     
     # Define exit criteria for research phase
     exceeded_allowed_iterations = research_iterations > configurable.max_researcher_iterations
@@ -247,7 +254,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     # Exit if any termination condition is met
     if exceeded_allowed_iterations or no_tool_calls or research_complete_tool_call:
         return Command(
-            goto=END,
+            goto="__end__",
             update={
                 "notes": get_notes_from_tool_calls(supervisor_messages),
                 "research_brief": state.get("research_brief", "")
@@ -342,7 +349,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
 
 # Supervisor Subgraph Construction
 # Creates the supervisor workflow that manages research delegation and coordination
-supervisor_builder = StateGraph(SupervisorState, config_schema=Configuration)
+supervisor_builder = StateGraph(SupervisorState, context_schema=Configuration)
 
 # Add supervisor nodes for research management
 supervisor_builder.add_node("supervisor", supervisor)           # Main supervisor logic
@@ -575,8 +582,8 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
 # Creates individual researcher workflow for conducting focused research on specific topics
 researcher_builder = StateGraph(
     ResearcherState, 
-    output=ResearcherOutputState, 
-    config_schema=Configuration
+    output_schema=ResearcherOutputState, 
+    context_schema=Configuration
 )
 
 # Add researcher nodes for research execution and compression
@@ -687,8 +694,8 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
 # Creates the complete deep research workflow from user input to final report
 graph_builder = StateGraph(
     AgentState, 
-    input=AgentInputState, 
-    config_schema=Configuration
+    input_schema=AgentInputState, 
+    context_schema=Configuration
 )
 
 # Add main workflow nodes for the complete research process

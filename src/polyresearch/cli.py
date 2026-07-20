@@ -22,9 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def run_query(query: str) -> str:
     """Run one research query and return the generated report."""
-    from polyresearch.graph import deep_researcher
+    from polyresearch.graph import graph
 
-    result = await deep_researcher.ainvoke(
+    result = await graph.ainvoke(
         {"messages": [HumanMessage(content=query)]},
         {"configurable": {}},
     )
