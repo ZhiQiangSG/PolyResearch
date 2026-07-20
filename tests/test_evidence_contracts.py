@@ -6,7 +6,14 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
-from polyresearch.models import Claim, EvidencePassage, SourceRecord, TranslationRecord
+from polyresearch.models import (
+    Claim,
+    ClaimExtractionDraft,
+    ClaimScope,
+    EvidencePassage,
+    SourceRecord,
+    TranslationRecord,
+)
 from polyresearch.models.graph_state import merge_evidence_by_id, override_reducer
 from polyresearch.repositories import SqliteEvidenceRepository
 
@@ -57,6 +64,28 @@ class EvidenceContractTests(unittest.TestCase):
         self.assertEqual(translation.source_original_text_hash, passage.original_text_hash)
         with self.assertRaises(ValidationError):
             passage.text = "Altered evidence."
+
+    def test_claim_extraction_draft_requires_atomic_scope_modality_and_passage_reference(self) -> None:
+        source = SourceRecord(canonical_url="https://example.test", title="Example")
+        passage = EvidencePassage(
+            source_id=source.id, text="The policy changed.", locator="paragraph-1"
+        )
+        with self.assertRaises(ValidationError):
+            ClaimExtractionDraft(
+                atomic_proposition="The policy changed.",
+                normalized_statement="The policy changed.",
+                extraction_confidence=0.9,
+                evidence_passage_ids=[passage.id],
+            )
+        draft = ClaimExtractionDraft(
+            atomic_proposition="The policy changed.",
+            normalized_statement="The policy changed.",
+            scope=ClaimScope(description="The cited policy document."),
+            modality="asserted",
+            extraction_confidence=0.9,
+            evidence_passage_ids=[passage.id],
+        )
+        self.assertEqual(draft.evidence_passage_ids, [passage.id])
 
     def test_evidence_reducer_deduplicates_ids_and_override_reducer_replaces(self) -> None:
         source = SourceRecord(canonical_url="https://example.test", title="Example")

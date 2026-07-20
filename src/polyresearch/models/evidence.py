@@ -202,6 +202,73 @@ class Claim(BaseModel):
     evidence_passage_ids: list[UUID] = Field(min_length=1)
     original_wording: str | None = None
     extraction_confidence: float = Field(ge=0, le=1)
+    atomic_proposition: str | None = None
+    entities: list["ClaimEntity"] = Field(default_factory=list)
+    quantities: list["ClaimQuantity"] = Field(default_factory=list)
+    dates: list["ClaimDate"] = Field(default_factory=list)
+    locations: list["ClaimLocation"] = Field(default_factory=list)
+    scope: "ClaimScope | None" = None
+    qualifiers: list[str] = Field(default_factory=list)
+    modality: str | None = None
+
+
+class ClaimEntity(BaseModel):
+    """An entity as written in the passage, with optional normalization."""
+
+    original_name: str = Field(min_length=1)
+    normalized_name: str | None = None
+    entity_type: str | None = None
+
+
+class ClaimQuantity(BaseModel):
+    """A quantity that retains its source rendering before later normalization."""
+
+    original_value: str = Field(min_length=1)
+    normalized_value: str | None = None
+    unit: str | None = None
+
+
+class ClaimDate(BaseModel):
+    """A source date expression and, where safe, an ISO-normalized derivative."""
+
+    original_value: str = Field(min_length=1)
+    normalized_value: str | None = None
+
+
+class ClaimLocation(BaseModel):
+    """A location as written in evidence, preserving uncertain normalization."""
+
+    original_name: str = Field(min_length=1)
+    normalized_name: str | None = None
+
+
+class ClaimScope(BaseModel):
+    """Boundaries that prevent an atomic claim being generalized beyond evidence."""
+
+    description: str = Field(min_length=1)
+    temporal: str | None = None
+    geographic: str | None = None
+    population: str | None = None
+
+
+class ClaimExtractionDraft(BaseModel):
+    """Strict Qwen output for one atomic claim grounded in selected passages."""
+
+    id: UUID = Field(default_factory=uuid4)
+    atomic_proposition: str = Field(min_length=1)
+    original_wording: str | None = None
+    normalized_statement: str = Field(min_length=1)
+    entities: list[ClaimEntity] = Field(default_factory=list)
+    quantities: list[ClaimQuantity] = Field(default_factory=list)
+    dates: list[ClaimDate] = Field(default_factory=list)
+    locations: list[ClaimLocation] = Field(default_factory=list)
+    scope: ClaimScope
+    qualifiers: list[str] = Field(default_factory=list)
+    modality: Literal[
+        "asserted", "reported", "estimated", "possible", "required", "prohibited", "unknown"
+    ]
+    extraction_confidence: float = Field(ge=0, le=1)
+    evidence_passage_ids: list[UUID] = Field(min_length=1)
 
 
 class EvidenceLink(BaseModel):
@@ -276,4 +343,4 @@ class ReportBundle(BaseModel):
 class ClaimExtractionResult(BaseModel):
     """Structured result returned by the claim-extraction model."""
 
-    claims: list[Claim] = Field(default_factory=list)
+    claims: list[ClaimExtractionDraft] = Field(default_factory=list)

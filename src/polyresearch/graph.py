@@ -22,6 +22,7 @@ from polyresearch.models import (
     AgentInputState,
     AgentState,
     Claim,
+    ClaimExtractionDraft,
     ClaimExtractionResult,
     ClarifyWithUser,
     ConductResearch,
@@ -650,13 +651,17 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
     )
     extraction_prompt = (
         "Extract only atomic, falsifiable claims directly supported by the supplied "
-        "evidence. Each claim must cite one or more exact passage IDs from the "
-        "typed evidence ledger. Do not invent sources, passage IDs, or verification "
-        "results. Raw tool output is an audit attachment, not evidence for reasoning."
+        "selected evidence passages. For every claim emit: an atomic proposition; "
+        "original-language wording when available; normalized wording in the requested "
+        "output language; entities, quantities, dates, locations, and a bounded scope; "
+        "qualifiers and modality; extraction confidence; and one or more exact passage "
+        "IDs. Preserve original values and terminology. Do not invent sources, passage "
+        "IDs, normalizations, or verification results. Raw tool output is audit-only."
     )
     evidence_ledger = json.dumps(
         {
             "sources": _serialize_artifacts(sources, SourceRecord),
+            "output_language": config.get("configurable", {}).get("output_language", "en"),
             "passages": _serialize_artifacts(selected_passages, EvidencePassage),
         },
         ensure_ascii=False,
@@ -684,9 +689,23 @@ async def extract_claims(state: ResearcherState, config: RunnableConfig):
 
     known_passage_ids = {passage.id for passage in selected_passages}
     claims = [
-        claim
-        for claim in response.claims
-        if set(claim.evidence_passage_ids).issubset(known_passage_ids)
+        Claim(
+            id=draft.id,
+            statement=draft.normalized_statement,
+            atomic_proposition=draft.atomic_proposition,
+            original_wording=draft.original_wording,
+            entities=draft.entities,
+            quantities=draft.quantities,
+            dates=draft.dates,
+            locations=draft.locations,
+            scope=draft.scope,
+            qualifiers=draft.qualifiers,
+            modality=draft.modality,
+            evidence_passage_ids=draft.evidence_passage_ids,
+            extraction_confidence=draft.extraction_confidence,
+        )
+        for draft in response.claims
+        if set(draft.evidence_passage_ids).issubset(known_passage_ids)
     ]
     evidence_links = [
         EvidenceLink(

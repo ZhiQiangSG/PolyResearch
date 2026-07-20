@@ -6,7 +6,9 @@ from uuid import uuid4
 
 from polyresearch.models import (
     Claim,
+    ClaimExtractionDraft,
     ClaimExtractionResult,
+    ClaimScope,
     EvidencePassage,
     ReportDraft,
     ReportStatementDraft,
@@ -32,7 +34,20 @@ class _ClaimExtractorStub:
 
     async def ainvoke(self, messages):
         self.messages = messages
-        return ClaimExtractionResult(claims=[self.claim])
+        return ClaimExtractionResult(
+            claims=[
+                ClaimExtractionDraft(
+                    id=self.claim.id,
+                    atomic_proposition=self.claim.statement,
+                    original_wording=self.claim.original_wording,
+                    normalized_statement=self.claim.statement,
+                    scope=ClaimScope(description="Limited to the cited passage."),
+                    modality="asserted",
+                    evidence_passage_ids=self.claim.evidence_passage_ids,
+                    extraction_confidence=self.claim.extraction_confidence,
+                )
+            ]
+        )
 
 
 class _ReportWriterStub:
@@ -138,8 +153,11 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
 
-                self.assertEqual(result["claims"], [claim])
-                self.assertEqual(await repository.list_claims(run.id), [claim])
+                self.assertEqual([item.id for item in result["claims"]], [claim.id])
+                self.assertEqual(
+                    [item.id for item in await repository.list_claims(run.id)], [claim.id]
+                )
+                self.assertEqual(result["claims"][0].scope.description, "Limited to the cited passage.")
                 links = await repository.list_evidence_links(run.id)
                 self.assertEqual(len(links), 1)
                 self.assertEqual(links[0].claim_id, claim.id)
@@ -265,7 +283,9 @@ class TypedDownstreamTests(unittest.IsolatedAsyncioTestCase):
                 ledger_content = extractor.messages[1].content
                 self.assertIn(str(source_a.id), ledger_content)
                 self.assertNotIn(str(source_b.id), ledger_content)
-                self.assertEqual(await repository.list_claims(run.id), [claim_a])
+                self.assertEqual(
+                    [claim.id for claim in await repository.list_claims(run.id)], [claim_a.id]
+                )
             finally:
                 graph_module.create_qwen_chat_model = original_factory
                 repository.close()

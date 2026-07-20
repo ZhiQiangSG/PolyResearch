@@ -10,7 +10,9 @@ from langchain_core.messages import HumanMessage
 from polyresearch import utils
 from polyresearch.models import (
     Claim,
+    ClaimExtractionDraft,
     ClaimExtractionResult,
+    ClaimScope,
     ReportDraft,
     ReportStatementDraft,
 )
@@ -30,7 +32,20 @@ class _ClaimExtractorStub:
         return self
 
     async def ainvoke(self, messages):
-        return ClaimExtractionResult(claims=[self.claim])
+        return ClaimExtractionResult(
+            claims=[
+                ClaimExtractionDraft(
+                    id=self.claim.id,
+                    atomic_proposition=self.claim.statement,
+                    original_wording=self.claim.original_wording,
+                    normalized_statement=self.claim.statement,
+                    scope=ClaimScope(description="Limited to the cited passage."),
+                    modality="asserted",
+                    evidence_passage_ids=self.claim.evidence_passage_ids,
+                    extraction_confidence=self.claim.extraction_confidence,
+                )
+            ]
+        )
 
 
 class _ReportWriterStub:
