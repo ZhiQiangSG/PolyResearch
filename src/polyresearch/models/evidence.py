@@ -213,11 +213,19 @@ class Claim(BaseModel):
 
 
 class ClaimEntity(BaseModel):
-    """An entity as written in the passage, with optional normalization."""
+    """An entity retaining all source forms and any cautious resolution outcome."""
 
     original_name: str = Field(min_length=1)
     normalized_name: str | None = None
     entity_type: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    script_variants: list[str] = Field(default_factory=list)
+    transliterations: list[str] = Field(default_factory=list)
+    historical_names: list[str] = Field(default_factory=list)
+    resolved_entity_id: UUID | None = None
+    resolution_status: Literal["resolved", "ambiguous", "unresolved"] = "unresolved"
+    resolution_confidence: float | None = Field(default=None, ge=0, le=1)
+    resolution_rationale: str | None = None
 
 
 class ClaimQuantity(BaseModel):
