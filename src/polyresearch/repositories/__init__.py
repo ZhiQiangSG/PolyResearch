@@ -5,9 +5,11 @@ from polyresearch.repositories.base import (
     EvidenceRepository,
     RepositoryNotFoundError,
 )
+from polyresearch.repositories.sqlite import SqliteEvidenceRepository
 
 __all__ = [
     "ArtifactConflictError",
     "EvidenceRepository",
     "RepositoryNotFoundError",
+    "SqliteEvidenceRepository",
 ]

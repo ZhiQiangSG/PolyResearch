@@ -1,0 +1,305 @@
+"""SQLite implementation of the local PolyResearch evidence ledger."""
+
+import json
+import sqlite3
+from collections.abc import Sequence
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, TypeVar
+from uuid import UUID
+
+from pydantic import BaseModel
+
+from polyresearch.models import (
+    Claim,
+    EvidenceLink,
+    EvidencePassage,
+    QueryRecord,
+    ReportBundle,
+    ReportStatement,
+    ResearchPlan,
+    ResearchRun,
+    SourceRecord,
+    SourceVersion,
+    TranslationRecord,
+    VerificationResult,
+)
+from polyresearch.repositories.base import (
+    ArtifactConflictError,
+    EvidenceRepository,
+    RepositoryNotFoundError,
+)
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+class SqliteEvidenceRepository(EvidenceRepository):
+    """Durable local ledger with idempotent, immutable artifact writes.
+
+    The implementation stores a canonical JSON payload alongside relational run IDs.
+    This keeps the initial SQLite schema migration-friendly while preserving complete
+    Pydantic artifacts and their stable IDs for later graph traversal.
+    """
+
+    _MIGRATION_VERSION = 1
+    _ARTIFACT_TABLES = (
+        "research_plans",
+        "query_records",
+        "sources",
+        "source_versions",
+        "passages",
+        "translations",
+        "claims",
+        "evidence_links",
+        "verification_results",
+        "report_statements",
+        "report_bundles",
+    )
+
+    def __init__(self, database_path: str | Path = "polyresearch.db") -> None:
+        self.database_path = str(database_path)
+        if self.database_path != ":memory:":
+            Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(self.database_path)
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA foreign_keys = ON")
+        self._connection.execute("PRAGMA journal_mode = WAL")
+        self._migrate()
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        self._connection.close()
+
+    def _migrate(self) -> None:
+        with self._transaction():
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            applied = self._connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?",
+                (self._MIGRATION_VERSION,),
+            ).fetchone()
+            if applied:
+                return
+
+            self._connection.execute(
+                """
+                CREATE TABLE research_runs (
+                    id TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            for table in self._ARTIFACT_TABLES:
+                self._connection.execute(
+                    f"""
+                    CREATE TABLE {table} (
+                        id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        payload TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(run_id) REFERENCES research_runs(id)
+                    )
+                    """
+                )
+                self._connection.execute(
+                    f"CREATE INDEX idx_{table}_run_id ON {table}(run_id)"
+                )
+            self._connection.execute(
+                "INSERT INTO schema_migrations(version) VALUES (?)",
+                (self._MIGRATION_VERSION,),
+            )
+
+    @contextmanager
+    def _transaction(self):
+        try:
+            yield
+        except Exception:
+            self._connection.rollback()
+            raise
+        else:
+            self._connection.commit()
+
+    @staticmethod
+    def _payload(artifact: BaseModel) -> str:
+        return json.dumps(
+            artifact.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _ensure_run(self, run_id: UUID) -> None:
+        if not self._connection.execute(
+            "SELECT 1 FROM research_runs WHERE id = ?", (str(run_id),)
+        ).fetchone():
+            raise RepositoryNotFoundError(f"Research run {run_id} does not exist")
+
+    def _ensure_artifact(self, table: str, run_id: UUID, artifact_id: UUID) -> None:
+        if not self._connection.execute(
+            f"SELECT 1 FROM {table} WHERE id = ? AND run_id = ?",
+            (str(artifact_id), str(run_id)),
+        ).fetchone():
+            raise RepositoryNotFoundError(
+                f"{table} artifact {artifact_id} does not exist in run {run_id}"
+            )
+
+    def _append(
+        self, table: str, run_id: UUID, artifacts: Sequence[ModelT]
+    ) -> None:
+        self._ensure_run(run_id)
+        for artifact in artifacts:
+            artifact_run_id = getattr(artifact, "run_id", run_id)
+            if artifact_run_id != run_id:
+                raise ValueError(
+                    f"Artifact {artifact.id} belongs to run {artifact_run_id}, not {run_id}"
+                )
+            payload = self._payload(artifact)
+            existing = self._connection.execute(
+                f"SELECT payload FROM {table} WHERE id = ?", (str(artifact.id),)
+            ).fetchone()
+            if existing:
+                if existing["payload"] != payload:
+                    raise ArtifactConflictError(
+                        f"Immutable {table} artifact {artifact.id} has conflicting content"
+                    )
+                continue
+            self._connection.execute(
+                f"INSERT INTO {table}(id, run_id, payload) VALUES (?, ?, ?)",
+                (str(artifact.id), str(run_id), payload),
+            )
+
+    def _list(self, table: str, run_id: UUID, model_type: type[ModelT]) -> list[ModelT]:
+        self._ensure_run(run_id)
+        rows = self._connection.execute(
+            f"SELECT payload FROM {table} WHERE run_id = ? ORDER BY created_at, rowid",
+            (str(run_id),),
+        ).fetchall()
+        return [model_type.model_validate_json(row["payload"]) for row in rows]
+
+    async def create_run(self, run: ResearchRun) -> None:
+        with self._transaction():
+            payload = self._payload(run)
+            existing = self._connection.execute(
+                "SELECT payload FROM research_runs WHERE id = ?", (str(run.id),)
+            ).fetchone()
+            if existing:
+                if existing["payload"] != payload:
+                    raise ArtifactConflictError(
+                        f"Immutable research run {run.id} has conflicting content"
+                    )
+                return
+            self._connection.execute(
+                "INSERT INTO research_runs(id, payload) VALUES (?, ?)",
+                (str(run.id), payload),
+            )
+
+    async def get_run(self, run_id: UUID) -> ResearchRun:
+        row = self._connection.execute(
+            "SELECT payload FROM research_runs WHERE id = ?", (str(run_id),)
+        ).fetchone()
+        if not row:
+            raise RepositoryNotFoundError(f"Research run {run_id} does not exist")
+        return ResearchRun.model_validate_json(row["payload"])
+
+    async def append_research_plans(self, run_id: UUID, plans: Sequence[ResearchPlan]) -> None:
+        with self._transaction():
+            self._append("research_plans", run_id, plans)
+
+    async def append_query_records(self, run_id: UUID, queries: Sequence[QueryRecord]) -> None:
+        with self._transaction():
+            self._append("query_records", run_id, queries)
+
+    async def append_sources(self, run_id: UUID, sources: Sequence[SourceRecord]) -> None:
+        with self._transaction():
+            self._append("sources", run_id, sources)
+
+    async def append_source_versions(self, run_id: UUID, versions: Sequence[SourceVersion]) -> None:
+        with self._transaction():
+            for version in versions:
+                self._ensure_artifact("sources", run_id, version.source_id)
+            self._append("source_versions", run_id, versions)
+
+    async def append_passages(self, run_id: UUID, passages: Sequence[EvidencePassage]) -> None:
+        with self._transaction():
+            for passage in passages:
+                self._ensure_artifact("sources", run_id, passage.source_id)
+            self._append("passages", run_id, passages)
+
+    async def append_translations(self, run_id: UUID, translations: Sequence[TranslationRecord]) -> None:
+        with self._transaction():
+            for translation in translations:
+                self._ensure_artifact("passages", run_id, translation.passage_id)
+            self._append("translations", run_id, translations)
+
+    async def append_claims(self, run_id: UUID, claims: Sequence[Claim]) -> None:
+        with self._transaction():
+            for claim in claims:
+                for passage_id in claim.evidence_passage_ids:
+                    self._ensure_artifact("passages", run_id, passage_id)
+            self._append("claims", run_id, claims)
+
+    async def append_evidence_links(self, run_id: UUID, evidence_links: Sequence[EvidenceLink]) -> None:
+        with self._transaction():
+            for link in evidence_links:
+                self._ensure_artifact("claims", run_id, link.claim_id)
+                self._ensure_artifact("passages", run_id, link.passage_id)
+            self._append("evidence_links", run_id, evidence_links)
+
+    async def append_verification_results(self, run_id: UUID, results: Sequence[VerificationResult]) -> None:
+        with self._transaction():
+            for result in results:
+                self._ensure_artifact("claims", run_id, result.claim_id)
+                for link_id in result.evidence_link_ids:
+                    self._ensure_artifact("evidence_links", run_id, link_id)
+            self._append("verification_results", run_id, results)
+
+    async def append_report_statements(self, run_id: UUID, statements: Sequence[ReportStatement]) -> None:
+        with self._transaction():
+            for statement in statements:
+                for claim_id in statement.claim_ids:
+                    self._ensure_artifact("claims", run_id, claim_id)
+            self._append("report_statements", run_id, statements)
+
+    async def append_report_bundles(self, run_id: UUID, bundles: Sequence[ReportBundle]) -> None:
+        with self._transaction():
+            self._append("report_bundles", run_id, bundles)
+
+    async def list_research_plans(self, run_id: UUID) -> list[ResearchPlan]:
+        return self._list("research_plans", run_id, ResearchPlan)
+
+    async def list_query_records(self, run_id: UUID) -> list[QueryRecord]:
+        return self._list("query_records", run_id, QueryRecord)
+
+    async def list_sources(self, run_id: UUID) -> list[SourceRecord]:
+        return self._list("sources", run_id, SourceRecord)
+
+    async def list_source_versions(self, run_id: UUID) -> list[SourceVersion]:
+        return self._list("source_versions", run_id, SourceVersion)
+
+    async def list_passages(self, run_id: UUID) -> list[EvidencePassage]:
+        return self._list("passages", run_id, EvidencePassage)
+
+    async def list_translations(self, run_id: UUID) -> list[TranslationRecord]:
+        return self._list("translations", run_id, TranslationRecord)
+
+    async def list_claims(self, run_id: UUID) -> list[Claim]:
+        return self._list("claims", run_id, Claim)
+
+    async def list_evidence_links(self, run_id: UUID) -> list[EvidenceLink]:
+        return self._list("evidence_links", run_id, EvidenceLink)
+
+    async def list_verification_results(self, run_id: UUID) -> list[VerificationResult]:
+        return self._list("verification_results", run_id, VerificationResult)
+
+    async def list_report_statements(self, run_id: UUID) -> list[ReportStatement]:
+        return self._list("report_statements", run_id, ReportStatement)
+
+    async def list_report_bundles(self, run_id: UUID) -> list[ReportBundle]:
+        return self._list("report_bundles", run_id, ReportBundle)
