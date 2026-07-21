@@ -1,13 +1,80 @@
 """Qwen model configuration, credentials, and context-limit helpers."""
 
+import logging
 import os
-from typing import Optional
+from time import monotonic
+from typing import Any, Optional
 
 from langchain.chat_models import init_chat_model
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 
 from polyresearch.configuration import Configuration
+from polyresearch.security import redacted_exception_info
+
+logger = logging.getLogger(__name__)
+
+
+class QwenInvocationLoggingCallback(BaseCallbackHandler):
+    """Log Qwen invocation lifecycle data without recording prompt content."""
+
+    def __init__(self, model: str, max_tokens: int) -> None:
+        self.model = model
+        self.max_tokens = max_tokens
+        self._started_at: dict[str, float] = {}
+
+    def on_chat_model_start(self, serialized, messages, *, run_id, tags=None, **kwargs) -> None:
+        self._started_at[str(run_id)] = monotonic()
+        logger.info(
+            "Qwen model invocation started",
+            extra=self._log_context(run_id, tags),
+        )
+
+    def on_llm_end(self, response, *, run_id, tags=None, **kwargs) -> None:
+        request_id = _provider_request_id(response)
+        logger.info(
+            "Qwen model invocation completed",
+            extra={**self._log_context(run_id, tags), "provider_request_id": request_id},
+        )
+
+    def on_llm_error(self, error, *, run_id, tags=None, **kwargs) -> None:
+        logger.warning(
+            "Qwen model invocation failed",
+            extra={
+                **self._log_context(run_id, tags),
+                "error_type": type(error).__name__,
+                "status_code": getattr(error, "status_code", None),
+            },
+            exc_info=redacted_exception_info(error),
+        )
+
+    def _log_context(self, run_id: Any, tags: list[str] | None) -> dict[str, Any]:
+        key = str(run_id)
+        started_at = self._started_at.pop(key, None)
+        return {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "model_run_id": key,
+            "attempt": _retry_attempt(tags),
+            "elapsed_seconds": round(monotonic() - started_at, 3) if started_at else None,
+        }
+
+
+def _retry_attempt(tags: list[str] | None) -> int:
+    for tag in tags or []:
+        if tag.startswith("retry:attempt:"):
+            return int(tag.rsplit(":", maxsplit=1)[1])
+    return 1
+
+
+def _provider_request_id(response: Any) -> str | None:
+    for generations in getattr(response, "generations", []):
+        for generation in generations:
+            response_metadata = getattr(generation.message, "response_metadata", {})
+            if isinstance(response_metadata, dict) and response_metadata.get("request_id"):
+                return str(response_metadata["request_id"])
+    return None
 
 def is_token_limit_exceeded(exception: Exception) -> bool:
     """Determine if an exception indicates a token/context limit was exceeded.
@@ -96,7 +163,8 @@ def create_qwen_chat_model(
             model=model,
             max_tokens=max_tokens,
             api_key=api_key,
-        )
+        ),
+        callbacks=[QwenInvocationLoggingCallback(model, max_tokens)],
     )
 
 def get_tavily_api_key(config: RunnableConfig):
