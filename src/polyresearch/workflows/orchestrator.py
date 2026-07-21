@@ -1,6 +1,7 @@
 """Top-level PolyResearch workflow nodes and graph assembly."""
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Literal, cast
 from uuid import uuid4
@@ -28,9 +29,12 @@ from polyresearch.prompts import (
 from polyresearch.repositories import RunContext
 from polyresearch.runtime.model_utils import create_qwen_chat_model
 from polyresearch.runtime.text_utils import get_today_str
+from polyresearch.security import redacted_exception_info
 from polyresearch.workflows.report_generator import final_report_generation
 from polyresearch.evidence.report_qa import validate_report_statements
 from polyresearch.workflows.supervisor import supervisor_subgraph
+
+logger = logging.getLogger(__name__)
 
 async def initialize_research_run(
     state: AgentState, config: RunnableConfig
@@ -180,36 +184,55 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
 
 async def multilingual_planner(
     state: AgentState, config: RunnableConfig
-) -> Command[Literal["provider_routed_discovery"]]:
+) -> Command[Literal["provider_routed_discovery", "__end__"]]:
     """Create and persist Qwen's adaptive, structured multilingual research plan."""
     configurable = Configuration.from_runnable_config(config)
     context = RunContext.from_runnable_config(config)
     planner_model = create_qwen_chat_model(
         configurable,
         configurable.research_model,
-        configurable.research_model_max_tokens,
+        configurable.planner_model_max_tokens,
         config,
     ).with_structured_output(ResearchPlan).with_retry(
         stop_after_attempt=configurable.max_structured_output_retries
     )
     research_brief = state.get("research_brief") or ""
-    planned = cast(
-        ResearchPlan,
-        await planner_model.ainvoke(
-            [
-                HumanMessage(
-                    content=multilingual_planner_prompt.format(
-                        research_brief=research_brief,
-                        date=get_today_str(),
-                        output_language=config.get("configurable", {}).get(
-                            "output_language", "en"
-                        ),
-                        run_id=context.run_id,
+    try:
+        planned = cast(
+            ResearchPlan,
+            await planner_model.ainvoke(
+                [
+                    HumanMessage(
+                        content=multilingual_planner_prompt.format(
+                            research_brief=research_brief,
+                            date=get_today_str(),
+                            output_language=config.get("configurable", {}).get(
+                                "output_language", "en"
+                            ),
+                            run_id=context.run_id,
+                        )
                     )
-                )
-            ]
-        ),
-    )
+                ]
+            ),
+        )
+    except Exception as error:
+        logger.error(
+            "Multilingual planner failed; no research plan was persisted",
+            extra={
+                "run_id": str(context.run_id),
+                "error_type": type(error).__name__,
+                "status_code": getattr(error, "status_code", None),
+            },
+            exc_info=redacted_exception_info(error),
+        )
+        message = (
+            "Unable to create the multilingual research plan after bounded retries. "
+            "No research was performed and no partial plan was saved; please retry."
+        )
+        return Command(
+            goto="__end__",
+            update={"messages": [AIMessage(content=message)], "final_report": message},
+        )
     # The model must not choose an identity for a different run.
     plan = planned.model_copy(
         update={

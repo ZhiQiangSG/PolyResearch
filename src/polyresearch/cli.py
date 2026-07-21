@@ -2,16 +2,16 @@
 
 import argparse
 import asyncio
-from html import escape
 import json
 import logging
 import os
 import re
+import sys
+from html import escape
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from langchain_core.messages import HumanMessage
-
 
 _LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
 
@@ -92,7 +92,8 @@ async def run_query(query: str) -> str:
         os.environ.get("POLYRESEARCH_DB_PATH", "polyresearch.db")
     )
     try:
-        result = await graph.ainvoke(
+        final_report = ""
+        async for output in graph.astream(
             {"messages": [HumanMessage(content=query)]},
             {
                 "configurable": {
@@ -103,8 +104,13 @@ async def run_query(query: str) -> str:
                     ),
                 }
             },
-        )
-        return result.get("final_report", "")
+            stream_mode="updates",
+        ):
+            for node_name, state_update in output.items():
+                print(f"  ✓ {node_name}", file=sys.stderr)
+                if isinstance(state_update, dict) and "final_report" in state_update:
+                    final_report = state_update["final_report"]
+        return final_report
     finally:
         repository.close()
 

@@ -65,6 +65,17 @@ class _PlannerStub:
         return self.plan
 
 
+class _FailingPlannerStub:
+    def with_structured_output(self, schema):
+        return self
+
+    def with_retry(self, **kwargs):
+        return self
+
+    async def ainvoke(self, messages):
+        raise TimeoutError("planner timed out")
+
+
 class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
     def test_multilingual_planner_fixtures_preserve_aliases_scripts_and_language_value(self):
         for fixture in _load_multilingual_fixtures():
@@ -225,7 +236,13 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
             )
             stub = _PlannerStub(model_plan)
             original_factory = graph_module.create_qwen_chat_model
-            graph_module.create_qwen_chat_model = lambda *args, **kwargs: stub
+            model_factory_args = []
+
+            def create_planner_stub(*args, **kwargs):
+                model_factory_args.append((args, kwargs))
+                return stub
+
+            graph_module.create_qwen_chat_model = create_planner_stub
             try:
                 await repository.create_run(run)
                 result = await graph_module.multilingual_planner(
@@ -236,6 +253,7 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(plan.run_id, run.id)
                 self.assertEqual(plan.model_id, "qwen3.7-max")
                 self.assertEqual(plan.prompt_version, "multilingual_planner_v1")
+                self.assertEqual(model_factory_args[0][0][2], 6000)
                 self.assertEqual(
                     plan.metadata["run_configuration"]["selected_languages"][0]["query_budget"],
                     3,
@@ -251,6 +269,26 @@ class MultilingualPlannerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("marginal information gain", stub.messages[0].content)
                 self.assertIn("do not use a fixed default language list", stub.messages[0].content)
                 self.assertIn("translation_note", stub.messages[0].content)
+            finally:
+                graph_module.create_qwen_chat_model = original_factory
+                repository.close()
+
+    async def test_planner_failure_stops_without_persisting_a_partial_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteEvidenceRepository(Path(directory) / "research.db")
+            run = ResearchRun(id=uuid4(), question="How did a policy change?", output_language="en")
+            original_factory = graph_module.create_qwen_chat_model
+            graph_module.create_qwen_chat_model = lambda *args, **kwargs: _FailingPlannerStub()
+            try:
+                await repository.create_run(run)
+                result = await graph_module.multilingual_planner(
+                    {"research_brief": run.question},
+                    {"configurable": {"run_id": str(run.id), "evidence_repository": repository}},
+                )
+
+                self.assertEqual(result.goto, "__end__")
+                self.assertIn("No research was performed", result.update["final_report"])
+                self.assertEqual(await repository.list_research_plans(run.id), [])
             finally:
                 graph_module.create_qwen_chat_model = original_factory
                 repository.close()

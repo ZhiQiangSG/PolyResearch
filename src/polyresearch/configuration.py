@@ -55,7 +55,7 @@ class Configuration(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # General Configuration
-    max_structured_output_retries: int = Field(default=3)
+    max_structured_output_retries: int = Field(default=2, ge=1, le=5)
     allow_clarification: bool = Field(default=True)
     max_concurrent_research_units: int = Field(default=5)
 
@@ -72,12 +72,15 @@ class Configuration(BaseModel):
 
     # Model Configuration
     qwen_base_url: str = Field(default=DEFAULT_QWEN_BASE_URL)
+    model_timeout_seconds: float = Field(default=120, gt=0, le=600)
+    model_max_retries: int = Field(default=0, ge=0, le=5)
     research_model: str = Field(default="qwen3.7-max")
-    research_model_max_tokens: int = Field(default=10000)
+    research_model_max_tokens: int = Field(default=40000)
+    planner_model_max_tokens: int = Field(default=6000, ge=1)
     compression_model: str = Field(default="qwen3.7-plus")
-    compression_model_max_tokens: int = Field(default=8192)
+    compression_model_max_tokens: int = Field(default=15000)
     final_report_model: str = Field(default="qwen3.7-plus")
-    final_report_model_max_tokens: int = Field(default=10000)
+    final_report_model_max_tokens: int = Field(default=20000)
 
     # Bailian is the only MCP integration exposed during Milestone 3.
     bailian_web_search: Optional[BailianWebSearchConfig] = Field(default=None)
@@ -120,6 +123,8 @@ class Configuration(BaseModel):
             "model_provider": "openai",
             "base_url": self.qwen_base_url,
             "max_tokens": max_tokens,
+            "timeout": self.model_timeout_seconds,
+            "max_retries": self.model_max_retries,
             "api_key": api_key,
             "tags": ["langsmith:nostream"],
         }
